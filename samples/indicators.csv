@@ -1,0 +1,7 @@
+zone,key,value,source,year
+alcorcon,notary_price_m2_house,2650,EJEMPLO,2026
+alcobendas,notary_price_m2_house,3100,EJEMPLO,2026
+madrid/chamartin,notary_price_m2_flat,5200,EJEMPLO,2026
+alcorcon,income_hh,34000,EJEMPLO,2023
+alcobendas,income_hh,52000,EJEMPLO,2023
+madrid/chamartin,income_hh,61000,EJEMPLO,2023

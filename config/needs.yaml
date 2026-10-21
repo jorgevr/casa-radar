@@ -1,0 +1,65 @@
+# ───────────────────────────────────────────────────────────────────────────
+# Casa Radar — your needs. Edit this file (or the "Necesidades" tab in the app).
+# Anything marked  # EDIT  is a placeholder: the app still runs, but the numbers
+# that depend on it (affordability, budget filters) are only as good as what you put here.
+# ───────────────────────────────────────────────────────────────────────────
+
+finance:
+  net_income_monthly: null     # EDIT  household net income per month (€). Without it, no effort ratio.
+  savings: null                # EDIT  cash available for down payment + taxes + costs (€)
+  equity_from_sale: null       # EDIT  net cash if you sell the current home (€), else null
+  use_equity_from_sale: false  # include equity_from_sale in savings above?
+  tin_pct: 3.0                 # EDIT  nominal interest rate you expect (placeholder, not a quote)
+  years: 30
+  max_effort: 0.35             # max share of net income for the mortgage payment (rule of thumb, adjust)
+  max_price: null              # EDIT  hard ceiling on purchase price (€), null = none
+
+costs:                         # Comunidad de Madrid general rates — verify before trusting
+  itp: 0.06
+  ajd: 0.0075
+  iva_new: 0.10
+  other_pct: 0.012
+  max_ltv: 0.80
+
+home:                          # hard filters
+  property_types: [chalet, adosado, pareado, bajo]   # piso, bajo, atico, chalet, adosado, pareado, otro
+  min_area_m2: 90              # EDIT  your current home is 90 m²; "better" presumably means more
+  min_bedrooms: 4              # EDIT  assumption: at least what you have now
+  require_garden: false        # true = discard listings without garden (bajos need one to be useful)
+  min_plot_m2: null            # for chalets/adosados
+
+geography:
+  allow_zones: []              # empty = everything you ingest; else list of zone ids, e.g. [alcorcon, alcobendas]
+  preferred_zones: [alcorcon, alcobendas]   # small bonus; the two areas already on your shortlist
+  district_level: [madrid]     # municipalities handled per district (zone id = madrid/chamberi)
+
+market:
+  # Asking prices run above notarial (closing) prices. Leave 0 until you calibrate it: the Zonas tab
+  # shows "implied markup" wherever you have both a notary price and enough listings.
+  asking_markup: 0.0
+  min_listings_for_median: 5
+
+neighbourhood:                 # weights for the zone score (percentile rank across your zones)
+  indicators:
+    income_hh:      {weight: 2, direction: higher}   # INE Atlas de renta (household income)
+    pct_65plus:     {weight: 0, direction: lower}    # padrón
+    density:        {weight: 0, direction: lower}
+    no2:            {weight: 1, direction: lower}    # air quality
+    crime_rate:     {weight: 1, direction: lower}    # Interior is municipal only — weak signal
+    rent_m2_house:  {weight: 0, direction: higher}   # demand proxy, off by default
+
+amenities:                     # per-listing, from OpenStreetMap; score 1 at good_m, 0 at bad_m
+  park:        {weight: 2, good_m: 300, bad_m: 1500}
+  school:      {weight: 2, good_m: 500, bad_m: 2000}
+  health:      {weight: 1, good_m: 800, bad_m: 3000}
+  transit:     {weight: 2, good_m: 600, bad_m: 3000}
+  supermarket: {weight: 1, good_m: 500, bad_m: 2000}
+
+scoring:                       # weights of the final 0–100 opportunity score
+  weights:
+    price: 3          # asking €/m² vs benchmark (notary price, else median of your listings)
+    affordability: 3  # mortgage effort vs your ceiling
+    neighbourhood: 2
+    amenities: 2
+    fit: 1            # preferred zone, extra bedrooms, garden, plot
+    momentum: 1       # price drops

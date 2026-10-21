@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Casa Radar</title>
+<style>
+:root{--bg:#f6f5f2;--card:#fff;--ink:#1d1d1b;--mut:#6b6a66;--line:#e3e1db;--acc:#1f5f4a;--warn:#a8561a;--bad:#9b2c2c;--good:#2d7a4f}
+@media (prefers-color-scheme:dark){:root{--bg:#161614;--card:#1f1f1c;--ink:#ecebe6;--mut:#9a9890;--line:#33322e;--acc:#6bbf9d;--warn:#e0995a;--bad:#e07a7a;--good:#6bbf9d}}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--ink)}
+header{display:flex;gap:18px;align-items:center;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+h1{font-size:16px;margin:0 8px 0 0}nav button{background:none;border:0;padding:6px 10px;font:inherit;color:var(--mut);cursor:pointer;border-bottom:2px solid transparent}
+nav button.on{color:var(--ink);border-color:var(--acc)}main{max-width:1200px;margin:0 auto;padding:18px 20px 60px}
+table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+th,td{padding:7px 9px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}th{font-weight:600;color:var(--mut);font-size:12px}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}tr.row{cursor:pointer}tr.row:hover td{background:color-mix(in srgb,var(--acc) 6%,transparent)}
+tr.ex td{opacity:.5}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:12px 0}
+.bar{display:inline-block;width:60px;height:8px;background:var(--line);border-radius:4px;vertical-align:middle;margin-right:6px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
+.pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;border:1px solid var(--line);color:var(--mut)}.warn{color:var(--warn)}.bad{color:var(--bad)}.good{color:var(--good)}.mut{color:var(--mut)}
+input,select,textarea,button.b{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
+button.b{cursor:pointer}button.b.p{background:var(--acc);color:#fff;border-color:var(--acc)}textarea{width:100%;min-height:110px;font-family:ui-monospace,monospace;font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}label{display:block;font-size:12px;color:var(--mut)}label input,label select{width:100%;margin-top:2px}
+.row2{display:flex;gap:10px;align-items:center;flex-wrap:wrap}ul.fl{margin:6px 0;padding-left:18px}.hide{display:none}.det td{white-space:normal;background:var(--bg)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 14px}h3{margin:14px 0 6px;font-size:13px}.scroll{overflow-x:auto}
+</style>
+</head>
+<body>
+<header>
+  <h1>Casa Radar</h1>
+  <nav id="nav"></nav>
+  <span class="mut" id="stat" style="margin-left:auto"></span>
+</header>
+<main id="main"></main>
+<script>
+const $=(s,r=document)=>r.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const eur=n=>n==null?'—':Math.round(n).toLocaleString('es-ES')+' €';
+const pct=(n,d=0)=>n==null?'—':(n*100).toFixed(d)+'%';
+async function api(path,opt={}){const r=await fetch('/api'+path,{headers:opt.body&&typeof opt.body==='object'?{'Content-Type':'application/json'}:{},...opt,body:opt.body&&typeof opt.body==='object'?JSON.stringify(opt.body):opt.body});
+  if(!r.ok){let m;try{m=(await r.json()).detail}catch{m=r.statusText}throw new Error(m)}return (r.headers.get('content-type')||'').includes('json')?r.json():r.text()}
+const COMP={price:'Precio vs referencia',affordability:'Hipoteca',neighbourhood:'Barrio',amenities:'Servicios',fit:'Encaje',momentum:'Bajada de precio'};
+const TABS={ranking:'Oportunidades',zonas:'Zonas',needs:'Necesidades',mortgage:'Hipoteca',data:'Datos'};
+let tab='ranking',showEx=false,open=null,needs=null;
+function nav(){$('#nav').innerHTML=Object.entries(TABS).map(([k,v])=>`<button class="${k===tab?'on':''}" data-t="${k}">${v}</button>`).join('');
+  $('#nav').onclick=e=>{if(e.target.dataset.t){tab=e.target.dataset.t;render()}}}
+const bar=v=>v==null?'<span class="mut">—</span>':`<span class="bar"><i style="width:${Math.round(v*100)}%"></i></span>${Math.round(v*100)}`;
+function toast(m,bad){const t=document.createElement('div');t.textContent=m;t.style.cssText=`position:fixed;bottom:18px;right:18px;padding:10px 14px;border-radius:8px;background:var(--card);border:1px solid var(--line);color:var(--${bad?'bad':'ink'});z-index:9`;document.body.append(t);setTimeout(()=>t.remove(),4000)}
+
+async function renderRanking(){
+  const L=await api('/listings');needs=await api('/needs');
+  const vis=L.filter(l=>showEx||(!l.eval.excluded.length&&l.status!=='discarded'));
+  $('#stat').textContent=`${L.length} anuncios · ${L.filter(l=>!l.eval.excluded.length).length} cumplen tus filtros`;
+  let h=`<div class="row2" style="margin-bottom:10px"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ex" ${showEx?'checked':''} style="width:auto"> mostrar descartados por filtros</label><a href="/api/export.csv" class="mut">exportar CSV</a></div>`;
+  if(!L.length)h+=`<div class="card">Aún no hay anuncios. Ve a <b>Datos</b> para importar un CSV, añadir uno a mano o lanzar la búsqueda de Idealista.</div>`;
+  h+=`<div class="scroll"><table><thead><tr><th>Score</th><th>Zona</th><th>Tipo</th><th class="n">Precio</th><th class="n">m²</th><th class="n">€/m²</th><th class="n">vs ref.</th><th class="n">Hab</th><th class="n">Esfuerzo</th><th>Estado</th></tr></thead><tbody>`;
+  for(const l of vis){const e=l.eval,m=e.mortgage;
+    h+=`<tr class="row ${e.excluded.length?'ex':''}" data-id="${esc(l.id)}"><td>${e.score==null?'<span class="mut">—</span>':bar(e.score/100)}${e.coverage<.6?' <span class="warn" title="Poca cobertura de datos">⚠</span>':''}</td>
+    <td>${esc(l.zone_id)}</td><td>${esc(l.property_type)}</td><td class="n">${eur(l.price)}</td><td class="n">${l.area_m2??'—'}</td><td class="n">${eur(e.price_m2)}</td>
+    <td class="n ${e.discount_vs_benchmark>0?'good':e.discount_vs_benchmark<0?'bad':''}">${e.discount_vs_benchmark==null?'—':(e.discount_vs_benchmark>0?'−':'+')+pct(Math.abs(e.discount_vs_benchmark))}</td>
+    <td class="n">${l.bedrooms??'—'}</td><td class="n ${m&&m.effort_ratio>needs.finance.max_effort?'bad':''}">${m?pct(m.effort_ratio):'—'}</td><td><span class="pill">${esc(l.status)}</span></td></tr>`;
+    if(open===l.id)h+=`<tr class="det"><td colspan="10">${detail(l)}</td></tr>`}
+  h+='</tbody></table></div>';$('#main').innerHTML=h;
+  $('#ex').onchange=e=>{showEx=e.target.checked;renderRanking()};
+  $('tbody').onclick=async e=>{const tr=e.target.closest('tr.row');if(tr){open=open===tr.dataset.id?null:tr.dataset.id;renderRanking();return}
+    const b=e.target.closest('button[data-act]');if(!b)return;const id=b.dataset.id;
+    try{if(b.dataset.act==='amen'){b.textContent='Consultando OSM…';await api('/listings/'+encodeURIComponent(id)+'/amenities',{method:'POST'})}
+      else await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{status:b.dataset.act}});renderRanking()}catch(err){toast(err.message,1);b.textContent='Reintentar'}}}
+function detail(l){const e=l.eval,m=e.mortgage;
+  let h=`<div class="row2" style="justify-content:space-between"><b>${esc(l.title||l.id)}</b><span>${l.url?`<a href="${esc(l.url)}" target="_blank" rel="noopener">abrir anuncio ↗</a>`:''}</span></div>`;
+  h+=`<div class="grid" style="margin-top:8px"><div><h3>Componentes del score</h3><div class="kv">${Object.entries(COMP).map(([k,n])=>`<span class="mut">${n}</span><span>${bar(e.components[k])}</span>`).join('')}</div>
+  <p class="mut">Referencia de precio: ${e.benchmark_m2?eur(e.benchmark_m2)+'/m² ('+esc(e.benchmark_source)+')':'ninguna'} · cobertura de datos ${pct(e.coverage)}</p></div>`;
+  if(m)h+=`<div><h3>Hipoteca (estimación)</h3><div class="kv"><span class="mut">Impuestos + gastos</span><span>${eur(m.taxes+m.other_costs)}</span><span class="mut">Préstamo (LTV ${pct(m.ltv)})</span><span>${eur(m.loan)}</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span>
+    ${m.stress.map(s=>`<span class="mut">Tipo ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio)+')':''}</span>`).join('')}</div></div>`;
+  const a=Object.entries(e.amenities);h+=`<div><h3>Servicios cercanos (OSM)</h3>${a.length?`<div class="kv">${a.map(([k,v])=>`<span class="mut">${esc(k)}</span><span>${v.nearest_m} m</span>`).join('')}</div>`:'<span class="mut">sin calcular</span>'}</div></div>`;
+  if(e.excluded.length)h+=`<h3>No cumple tus filtros</h3><ul class="fl bad">${e.excluded.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  if(e.flags.length)h+=`<h3>Avisos</h3><ul class="fl warn">${e.flags.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  h+=`<div class="row2" style="margin-top:8px"><button class="b p" data-act="shortlist" data-id="${esc(l.id)}">★ Preseleccionar</button><button class="b" data-act="discarded" data-id="${esc(l.id)}">Descartar</button><button class="b" data-act="amen" data-id="${esc(l.id)}" ${l.lat==null?'disabled title="sin coordenadas"':''}>Calcular servicios (OSM)</button></div>`;return h}
+
+async function renderZones(){
+  const Z=await api('/zones');const keys=['notary_price_m2_flat','notary_price_m2_house','income_hh','pct_65plus','no2','crime_rate'];
+  let h=`<p class="mut">Pon aquí el €/m² del Notariado (plurifamiliar → <i>flat</i>, unifamiliar → <i>house</i>) y el resto de indicadores. El score de zona compara entre las zonas que tengas cargadas: con menos de dos zonas con dato, no puntúa.</p><div class="scroll"><table><thead><tr><th>Zona</th><th class="n">Score</th><th class="n">Anuncios flat/house</th><th class="n">Mediana anuncios €/m² (flat / house)</th><th class="n">Sobreprecio implícito</th>${keys.map(k=>`<th>${k}</th>`).join('')}<th>Alquiler €/m² (SERPAVI)</th><th></th></tr></thead><tbody>`;
+  for(const z of Z){const f=z.listings.flat,o=z.listings.house,im=z.implied_markup;
+    h+=`<tr data-z="${esc(z.zone_id)}"><td>${esc(z.name)}</td><td class="n">${bar(z.score)}</td><td class="n">${f.n} / ${o.n}</td><td class="n">${f.median_m2?Math.round(f.median_m2):'—'} / ${o.median_m2?Math.round(o.median_m2):'—'}</td><td class="n">${Object.entries(im).map(([g,v])=>g+' '+(v>=0?'+':'')+pct(v)).join(' · ')||'—'}</td>
+    ${keys.map(k=>`<td><input data-k="${k}" size="7" value="${z.indicators[k]??''}"></td>`).join('')}<td class="mut">${z.indicators.rent_m2_flat?z.indicators.rent_m2_flat.toFixed(1):'—'} / ${z.indicators.rent_m2_house?z.indicators.rent_m2_house.toFixed(1):'—'}</td><td><button class="b">Guardar</button></td></tr>`}
+  h+='</tbody></table></div>';$('#main').innerHTML=h;$('#stat').textContent=`${Z.length} zonas`;
+  $('tbody').onclick=async e=>{const b=e.target.closest('button');if(!b)return;const tr=b.closest('tr');const body={};tr.querySelectorAll('input').forEach(i=>body[i.dataset.k]=i.value.trim()===''?null:parseFloat(i.value.replace(',','.')));
+    try{await api('/zones/'+tr.dataset.z+'/indicators',{method:'PUT',body});toast('Guardado');renderZones()}catch(err){toast(err.message,1)}}}
+
+async function renderNeeds(){
+  needs=await api('/needs');const f=needs.finance,h=needs.home;
+  const num=(p,k,l,step='any')=>`<label>${l}<input type="number" step="${step}" data-p="${p}" data-k="${k}" value="${needs[p][k]??''}"></label>`;
+  $('#main').innerHTML=`<div class="card"><h3 style="margin-top:0">Finanzas</h3><div class="grid">${num('finance','net_income_monthly','Ingresos netos / mes (€)')}${num('finance','savings','Ahorros (€)')}${num('finance','equity_from_sale','Si vendes la casa actual: neto (€)')}
+  <label>Sumar ese neto a los ahorros<select data-p="finance" data-k="use_equity_from_sale" data-bool="1"><option value="false" ${!f.use_equity_from_sale?'selected':''}>No</option><option value="true" ${f.use_equity_from_sale?'selected':''}>Sí</option></select></label>
+  ${num('finance','tin_pct','Tipo de interés (TIN %)')}${num('finance','years','Plazo (años)')}${num('finance','max_effort','Esfuerzo máximo (0.35 = 35%)')}${num('finance','max_price','Precio máximo (€)')}</div>
+  <h3>Vivienda</h3><div class="grid">${num('home','min_area_m2','m² mínimos')}${num('home','min_bedrooms','Habitaciones mínimas')}${num('home','min_plot_m2','Parcela mínima m²')}
+  <label>Tipos (separados por coma)<input data-p="home" data-k="property_types" data-list="1" value="${(h.property_types||[]).join(', ')}"></label>
+  <label>Exigir jardín<select data-p="home" data-k="require_garden" data-bool="1"><option value="false" ${!h.require_garden?'selected':''}>No</option><option value="true" ${h.require_garden?'selected':''}>Sí</option></select></label></div>
+  <h3>Geografía</h3><div class="grid"><label>Zonas permitidas (ids, vacío = todas)<input data-p="geography" data-k="allow_zones" data-list="1" value="${(needs.geography.allow_zones||[]).join(', ')}"></label>
+  <label>Zonas preferidas<input data-p="geography" data-k="preferred_zones" data-list="1" value="${(needs.geography.preferred_zones||[]).join(', ')}"></label></div>
+  <p class="mut">Los pesos del score, de barrio y de servicios se editan en <code>config/needs.yaml</code>. Al guardar aquí se reescribe el YAML sin comentarios (queda copia en needs.yaml.bak).</p>
+  <button class="b p" id="save">Guardar</button></div>`;
+  $('#save').onclick=async()=>{document.querySelectorAll('[data-p]').forEach(i=>{const p=i.dataset.p,k=i.dataset.k;let v=i.value;
+      if(i.dataset.bool)v=v==='true';else if(i.dataset.list)v=v.split(',').map(s=>s.trim()).filter(Boolean);else v=v===''?null:parseFloat(v);needs[p][k]=v});
+    try{await api('/needs',{method:'PUT',body:needs});toast('Necesidades guardadas')}catch(err){toast(err.message,1)}}}
+
+function renderMortgage(){
+  $('#main').innerHTML=`<div class="card"><div class="grid"><label>Precio (€)<input id="p" type="number" value="450000"></label><label>Ahorros (€)<input id="s" type="number" value="120000"></label><label>Plazo (años)<input id="y" type="number" value="30"></label><label>TIN %<input id="t" type="number" step="0.01" value="3"></label><label>Ingresos netos/mes<input id="i" type="number"></label><label>Obra nueva<select id="n"><option value="false">No</option><option value="true">Sí</option></select></label></div>
+  <p><button class="b p" id="go">Calcular</button></p><div id="out"></div></div><p class="mut">Estimación propia (amortización francesa, impuestos y gastos de config/needs.yaml). No sustituye la simulación del banco ni la calculadora del Notariado.</p>`;
+  $('#go').onclick=async()=>{const q=new URLSearchParams({price:$('#p').value,savings:$('#s').value,years:$('#y').value,tin:$('#t').value,new_build:$('#n').value});if($('#i').value)q.set('income',$('#i').value);
+    try{const m=await api('/mortgage?'+q);$('#out').innerHTML=`<div class="kv"><span class="mut">Impuestos</span><span>${eur(m.taxes)}</span><span class="mut">Otros gastos</span><span>${eur(m.other_costs)}</span><span class="mut">Préstamo</span><span>${eur(m.loan)} (LTV ${pct(m.ltv)})</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span><span class="mut">Ahorro mínimo para entrar</span><span>${eur(m.min_savings_needed)} ${m.savings_shortfall>0?`<span class="bad">(faltan ${eur(m.savings_shortfall)})</span>`:''}</span>${m.effort_ratio!=null?`<span class="mut">Esfuerzo</span><span>${pct(m.effort_ratio,1)}</span>`:''}${m.stress.map(s=>`<span class="mut">Con TIN ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio,1)+')':''}</span>`).join('')}</div>`}catch(err){toast(err.message,1)}}}
+
+function renderData(){
+  $('#main').innerHTML=`<div class="card"><h3 style="margin-top:0">Idealista (vía idealista-mcp)</h3><p class="mut">Requiere config/providers.yaml y tus credenciales de la API de Idealista. Argumentos opcionales como JSON, p. ej. <code>{"center":"40.3458,-3.8249","distance":3000}</code>.</p><div class="row2"><input id="ia" style="flex:1" placeholder="{} (usa los de providers.yaml)"><button class="b p" id="ib">Buscar e importar</button></div></div>
+  <div class="card"><h3 style="margin-top:0">Anuncios (CSV)</h3><p class="mut">Columnas: url,title,property_type,price,area_m2,bedrooms,bathrooms,plot_m2,garden,new_build,lat,lon,municipality,district,neighborhood</p><textarea id="lc" placeholder="pega aquí el CSV"></textarea><p><button class="b p" id="lb">Importar anuncios</button></p></div>
+  <div class="card"><h3 style="margin-top:0">Añadir un anuncio a mano</h3><div class="grid">${['url','title','price','area_m2','bedrooms','plot_m2','lat','lon','municipality','district'].map(k=>`<label>${k}<input data-m="${k}"></label>`).join('')}<label>property_type<select data-m="property_type"><option>chalet</option><option>adosado</option><option>pareado</option><option>bajo</option><option>piso</option><option>atico</option></select></label><label>garden<select data-m="garden"><option value="">?</option><option value="1">sí</option><option value="0">no</option></select></label></div><p><button class="b p" id="mb">Añadir</button></p></div>
+  <div class="card"><h3 style="margin-top:0">Indicadores (CSV)</h3><p class="mut">Columnas: zone,key,value[,source,year]. Ejemplo: <code>madrid/chamberi,notary_price_m2_flat,6120,Notariado,2026</code></p><textarea id="ic"></textarea><p><button class="b p" id="ib2">Importar indicadores</button></p></div>`;
+  const go=(id,fn)=>$(id).onclick=async()=>{try{toast(await fn())}catch(e){toast(e.message,1)}};
+  go('#ib',async()=>{const t=$('#ia').value.trim();const r=await api('/providers/idealista/search',{method:'POST',body:t?JSON.parse(t):{}});return r.imported+' anuncios importados'});
+  go('#lb',async()=>{const r=await api('/listings/import-csv',{method:'POST',body:$('#lc').value});return r.imported+' anuncios importados'});
+  go('#ib2',async()=>{const r=await api('/indicators/import-csv',{method:'POST',body:$('#ic').value});return r.imported+' indicadores importados'});
+  go('#mb',async()=>{const b={};document.querySelectorAll('[data-m]').forEach(i=>{if(i.value!=='')b[i.dataset.m]=i.value});await api('/listings',{method:'POST',body:b});return 'Anuncio añadido'})}
+
+async function render(){nav();$('#stat').textContent='';try{await({ranking:renderRanking,zonas:renderZones,needs:renderNeeds,mortgage:async()=>renderMortgage(),data:async()=>renderData()}[tab])()}catch(e){$('#main').innerHTML=`<div class="card bad">${esc(e.message)}</div>`}}
+render();
+</script>
+</body>
+</html>

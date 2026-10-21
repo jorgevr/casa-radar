@@ -1,0 +1,8 @@
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+pyyaml>=6
+pandas>=2.2
+openpyxl>=3.1
+python-calamine>=0.2   # fast reader for the 71 MB SERPAVI xlsx (optional but strongly recommended)
+pytest>=8              # tests

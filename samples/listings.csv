@@ -1,0 +1,5 @@
+url,title,property_type,price,area_m2,bedrooms,bathrooms,plot_m2,garden,new_build,lat,lon,municipality,district
+https://example.test/e1,EJEMPLO adosado Prado Santo Domingo,adosado,520000,210,4,3,120,1,0,40.3402,-3.8391,Alcorcón,
+https://example.test/e2,EJEMPLO chalet Alcobendas,chalet,690000,240,5,3,400,1,0,40.5471,-3.6418,Alcobendas,
+https://example.test/e3,EJEMPLO bajo con jardín Chamartín,bajo,610000,130,4,2,,1,0,40.4600,-3.6770,Madrid,Chamartín
+https://example.test/e4,EJEMPLO piso Centro,piso,480000,80,2,1,,0,0,40.4168,-3.7038,Madrid,Centro

@@ -1,0 +1,13 @@
+# Copy to providers.yaml. Only needed for the Idealista connector; CSV/manual entry works without it.
+idealista:
+  # Path to the idealista-mcp binary (https://github.com/galimru/idealista-mcp/releases).
+  # It also needs ~/.config/idealista-mcp/config.json with the client_key / client_secret / signing_secret
+  # that Idealista issues for API access — the repo can't give you those.
+  command: ["/path/to/idealista-mcp"]
+  tool: search_ads
+  # Run `python -m app.cli mcp-schema` and copy the argument names it prints. The README of the MCP says
+  # search_ads takes location_id OR center+distance plus price/size/rooms filters; the exact names are
+  # NOT verified here, so these are placeholders to correct:
+  search_args:
+    center: "40.3458,-3.8249"   # lat,lng  (example: Alcorcón)
+    distance: 4000              # metres
