@@ -1,0 +1,26 @@
+# Configuration for Idealista MCP connector
+idealista:
+  # Path to the idealista-mcp binary
+  command: ["C:\\code\\idealista-mcp\\idealista-mcp.exe"]
+  tool: search_ads
+  # Argument names from `python -m app.cli mcp-schema` (verified against the real schema)
+  search_args:
+    # Location: use EITHER (center + distance) OR location_id
+    center: "40.3458,-3.8249"   # lat,lng format (example: Alcorcón)
+    distance: 4000              # metres
+    # location_id: "0-EU-ES-28-001"  # Alternative: use location_id from search_locations
+
+    # Required parameters
+    operation: "sale"           # "sale" or "rent"
+    property_type: "homes"      # "homes", "offices", "premises", "garages", "bedrooms", "newDevelopments"
+
+    # Optional filters (uncomment as needed)
+    # min_price: 100000
+    # max_price: 300000
+    # min_size: 60              # square metres
+    # max_size: 120
+    # min_rooms: 3
+    # max_rooms: 5
+    # num_page: 1               # pagination
+    # max_items: 50             # results per page (default: 20, max: 50)
+    # sort: "desc"              # "asc" (default) or "desc" (newest first)
