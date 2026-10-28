@@ -19,7 +19,7 @@ def pytest_configure(config):
 
 @pytest.fixture(autouse=True)
 def isolated_paths(tmp_path, monkeypatch):
-    """Keep every test away from data/, config/needs.yaml and %LOCALAPPDATA%\casa-radar\."""
+    """Keep every test away from data/, config/needs.yaml and the real app folder (CASA_APPDATA)."""
     needs = tmp_path / "needs.yaml"
     shutil.copyfile(EXAMPLE_NEEDS, needs)
     paths = {"CASA_DB": tmp_path / "casa.db", "CASA_NEEDS": needs, "CASA_APPDATA": tmp_path / "appdata"}

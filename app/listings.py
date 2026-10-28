@@ -90,7 +90,7 @@ def upsert_listing(conn, raw: dict, source: str, needs: dict) -> str:
              n["district"], n["neighborhood"], zone_id, day, day, dumps(raw)),
         )
         if n["price"]:
-            conn.execute("INSERT INTO price_history VALUES(?,?,?)", (lid, day, n["price"]))
+            conn.execute("INSERT INTO price_history(listing_id,day,price) VALUES(?,?,?)", (lid, day, n["price"]))
     else:
         conn.execute(
             "UPDATE listings SET url=?,title=?,property_type=?,price=?,area_m2=?,bedrooms=?,bathrooms=?,plot_m2=?,"
@@ -102,6 +102,6 @@ def upsert_listing(conn, raw: dict, source: str, needs: dict) -> str:
              n["district"], n["neighborhood"], zone_id, day, dumps(raw), lid),
         )
         if n["price"] and n["price"] != existing["price"]:
-            conn.execute("INSERT INTO price_history VALUES(?,?,?)", (lid, day, n["price"]))
+            conn.execute("INSERT INTO price_history(listing_id,day,price) VALUES(?,?,?)", (lid, day, n["price"]))
     conn.commit()
     return lid

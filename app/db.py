@@ -33,7 +33,48 @@ CREATE TABLE IF NOT EXISTS listings(
 );
 CREATE TABLE IF NOT EXISTS price_history(listing_id TEXT, day TEXT, price REAL);
 CREATE TABLE IF NOT EXISTS amenities(listing_id TEXT PRIMARY KEY, data TEXT, fetched TEXT);
+CREATE TABLE IF NOT EXISTS import_runs(
+  run_id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT, started_at TEXT, finished_at TEXT,
+  status TEXT, error TEXT, n_found INTEGER DEFAULT 0, n_imported INTEGER DEFAULT 0,
+  n_already INTEGER DEFAULT 0, n_rejected INTEGER DEFAULT 0, n_failed INTEGER DEFAULT 0,
+  n_new_listings INTEGER DEFAULT 0, n_updated_listings INTEGER DEFAULT 0,
+  n_price_changes INTEGER DEFAULT 0, notes TEXT DEFAULT '[]'
+);
+CREATE TABLE IF NOT EXISTS alert_emails(
+  email_id TEXT PRIMARY KEY, mailbox_id TEXT UNIQUE, content_hash TEXT, origin TEXT, file_name TEXT,
+  sender TEXT, subject TEXT, search_name TEXT, alert_date TEXT, forwarded INTEGER DEFAULT 0,
+  alert_type TEXT, outcome TEXT, reason TEXT, reader_version TEXT, category TEXT,
+  category_rules_matched TEXT, raw BLOB, first_run_id INTEGER, last_run_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS sightings(
+  email_id TEXT, listing_id TEXT, alert_type TEXT, seen_at TEXT, price REAL, previous_price REAL,
+  area_m2 REAL, bedrooms INTEGER, floor INTEGER, exterior INTEGER, elevator INTEGER, garage INTEGER,
+  type_text TEXT, property_type TEXT, new_build_stated INTEGER, development INTEGER,
+  unit_description TEXT, location_text TEXT, link_tracking TEXT, link_direct TEXT,
+  unrecognised TEXT DEFAULT '[]', category TEXT, raw_block TEXT,
+  PRIMARY KEY(email_id, listing_id)
+);
+CREATE INDEX IF NOT EXISTS sightings_listing ON sightings(listing_id);
+CREATE TABLE IF NOT EXISTS mailbox_state(
+  id INTEGER PRIMARY KEY CHECK(id = 1), provider TEXT, account TEXT, label_name TEXT, label_id TEXT,
+  auth_state TEXT DEFAULT 'not_configured', auto_sync TEXT DEFAULT 'on', backfill_from TEXT,
+  last_attempt_at TEXT, last_attempt_status TEXT, last_success_at TEXT, last_error_at TEXT,
+  last_error TEXT, running_run_id INTEGER, progress_done INTEGER, progress_total INTEGER
+);
 """
+
+# Columns added to existing tables by feature 001 (data-model.md); nullable so old databases keep working.
+ADDED_COLUMNS = {
+    "listings": [
+        ("floor", "INTEGER"), ("exterior", "INTEGER"), ("elevator", "INTEGER"), ("garage", "INTEGER"),
+        ("terrace", "INTEGER"), ("pool", "INTEGER"), ("location_text", "TEXT"), ("development", "INTEGER"),
+        ("unit_description", "TEXT"), ("new_build_origin", "TEXT"), ("field_sources", "TEXT"),
+        ("published_at", "TEXT"), ("price_updated_at", "TEXT"), ("categories", "TEXT"),
+        ("availability", "TEXT DEFAULT 'active'"), ("availability_changed_at", "TEXT"),
+        ("merged_into", "TEXT"), ("alert_flags", "TEXT"), ("first_run_id", "INTEGER"),
+    ],
+    "price_history": [("origin", "TEXT"), ("email_id", "TEXT")],
+}
 
 
 def connect(path: str | None = None) -> sqlite3.Connection:
@@ -43,7 +84,18 @@ def connect(path: str | None = None) -> sqlite3.Connection:
     conn = sqlite3.connect(p, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    migrate(conn)
     return conn
+
+
+def migrate(conn) -> None:
+    """Add the columns of ADDED_COLUMNS that an existing database lacks (idempotent)."""
+    for table, columns in ADDED_COLUMNS.items():
+        have = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+    conn.commit()
 
 
 def load_needs(path: str | None = None) -> dict:
