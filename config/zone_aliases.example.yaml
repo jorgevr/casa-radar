@@ -1,0 +1,5 @@
+# Copy to config/zone_aliases.yaml (untracked: it is yours) to map location texts the tool
+# cannot recognise to a zone. Key: the location text exactly as the listing shows it
+# ("zona no reconocida: ..."). Value: a zone id (municipality slug, or madrid/<district slug>).
+#
+# "alto de San Isidro, San Isidro, Madrid": madrid/carabanchel
