@@ -87,9 +87,11 @@ Mark each article pass / n/a / violation (see `.specify/memory/constitution.md`,
 - [x] IX Keep Raw Data: **pass** — every message stored as received with origin, fetch time and
   reader version; re-processing and category changes work from stored emails (R16).
 - [x] X Simplicity & Time-Box: **pass** — no new dependency; Google client libraries rejected in R3
-  (about eight packages for seven HTTP calls), `keyring` rejected in R4. v1 date still
-  `TODO(V1_DATE)`; this feature is on the v1 critical path (the only discovery channel). Mailbox
-  sync is the largest part; file import + reader + derivation can ship first (delivery order step 2).
+  (about eight packages for seven HTTP calls), `keyring` rejected in R4. v1 date **2026-11-28**
+  (constitution v1.1.1); this feature is on the v1 critical path (the only discovery channel).
+  v1 impact: the file path (delivery step 2) is targeted for 2026-11-14 and is usable on its own;
+  mailbox sync (step 3) for 2026-11-28. If step 3 slips, v1 ships with file import and sync follows,
+  rather than moving the date.
 
 Post-design re-check (after Phase 1): unchanged. No violations to justify.
 
@@ -162,9 +164,11 @@ be one new module. The reader is the only layout-specific code.
 
 ## Delivery order
 
-1. **P0 (prerequisite, Article III)**: untrack and ignore `data/`; untrack `config/needs.yaml`, add
-   `needs.example.yaml`; the user decides whether to rewrite history after checking old commits.
-   Move the original (non-anonymised) samples out of `C:\code\casa-radar\tests\fixtures\emails\`.
+1. **P0 (prerequisite, Article III)**: done on 2026-10-28 (staged): `data/` and `config/needs.yaml`
+   untracked and ignored, `config/needs.example.yaml` tracked; history checked, only nulls and
+   "EJEMPLO" rows, no rewrite needed; original samples moved out of the main checkout. Remaining
+   code task: when `config/needs.yaml` is missing, the app copies it from `needs.example.yaml`
+   (a fresh clone would otherwise fail to start).
 2. **File path, usable on its own**: storage, reader, derivation, categories, zones, scoring v2,
    `import-emails`, UI columns and sorting. Tested with the fixtures.
 3. **Mailbox**: secrets, OAuth, Gmail client, sync loop and schedule, status UI, setup screen.

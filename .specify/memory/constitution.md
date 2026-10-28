@@ -1,5 +1,12 @@
 <!--
-Sync Impact Report — amendment 2026-10-23
+Sync Impact Report — amendment 2026-10-28
+- Version: 1.1.0 → 1.1.1 (PATCH: deferred placeholder filled; no rule added, removed or redefined)
+- Modified: X Simplicity & Time-Box — TODO(V1_DATE) replaced by 2026-11-28 (set by the user)
+- Templates: ✅ no change needed (plan template already asks for the v1 impact)
+- Follow-up: plan 001-alert-email-import states its v1 impact against 2026-11-28.
+- Deferred: none.
+
+Previous report — amendment 2026-10-23
 - Version: 1.0.0 → 1.1.0 (MINOR: Article III materially expanded with one bounded exception; no
   existing protection removed)
 - Modified: III Local-First & Private (title unchanged) — adds the mail-provider exception
@@ -144,8 +151,7 @@ read-only is enough, the folder limit, and where the authorisation is stored (ou
 ### X. Simplicity and Time-Box
 
 - Dependencies MUST be minimal; each new one needs a written reason and the simpler alternative rejected.
-- Scope SHOULD favour what makes v1 usable; v1 MUST be usable for real decisions by
-  TODO(V1_DATE).
+- Scope SHOULD favour what makes v1 usable; v1 MUST be usable for real decisions by 2026-11-28.
 
 *Why*: a tool that ships after the house is bought is worthless.
 *Plan check*: new dependencies appear in the Complexity Tracking table; the plan states its v1 impact.
@@ -163,4 +169,4 @@ violation. A violation MUST be justified in Complexity Tracking or the plan does
   PATCH for wording fixes.
 - Dependent templates (plan, spec, tasks) MUST be re-checked on each amendment.
 
-**Version**: 1.1.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-23
+**Version**: 1.1.1 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-28

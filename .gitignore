@@ -7,3 +7,9 @@ token*.json
 data\casa.db
 data/casa.db
 config/needs.yaml
+
+# Personal data: local database (raw emails, listings) and household needs/finances (P0, Article III)
+data/
+config/needs.yaml
+config/needs.yaml.bak
+config/zone_aliases.yaml
