@@ -155,6 +155,12 @@ creation with a function that raises, and assert zero connections (SC-006).
   - new-build status: the email states it when the subject kind is `Nueva obra nueva` or the link is
     `/obra-nueva/`; a `/inmueble/` link states nothing (new-build stays unknown unless a category
     flag applies, FR-033).
+- **Layouts without samples** (FR-017, Article VI): no sample is forwarded or has a `text/plain`
+  part, so neither is parsed. Before calling the reader, the pipeline marks as `failed` (content
+  kept, re-processable) any email whose subject starts with `Fwd:`, `Fw:`, `RV:` or `Reenviado:`
+  (case-insensitive) or that contains a `message/rfc822` part ("forwarded alert without a sample"),
+  and any email with a `text/plain` part ("layout without a sample"). Support is added from a real
+  sample when one exists.
 - **Links**: listing links point directly to `www.idealista.com` with tracking parameters; the
   direct link is the path without query, derived from the email itself (FR-015). The tool never
   requests any of them, nor images (FR-014).

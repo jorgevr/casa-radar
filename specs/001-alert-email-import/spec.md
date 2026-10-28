@@ -3,7 +3,8 @@
 **Feature Branch**: `jorgevr/spec-kit` (spec directory `001-alert-email-import`)
 
 **Created**: 2026-10-22 · **Amended**: 2026-10-23 (scope: read alerts directly from the mailbox;
-then: provider read-only authorisation, alert categories, samples per saved search)
+then: provider read-only authorisation, alert categories, samples per saved search) · 2026-10-28
+(developments, price-drop alerts, published/updated dates, layouts without samples, relisted)
 
 **Status**: Draft
 
@@ -203,8 +204,9 @@ listings first seen in B.
 - **Same listing in several alerts**: one listing; each sighting recorded with its email and date.
 - **Same property under a different listing** (another alert, another agency, or a CSV/manual entry):
   both are kept and flagged "possible duplicate of …"; only the user merges them (Q1).
-- **Relisted** (same listing code reappears after being marked gone): the same listing returns to
-  active with its earlier history kept; the gap is visible in its history.
+- **Relisted** (same listing code reappears after the user marked it "no longer available"): the
+  listing stays "no longer available" (only the user changes it, FR-019), its history gains the new
+  sighting, and it is flagged "seen again in an alert on <date>" so the user can undo the mark.
 - **Price differs between two alerts**: the most recent email date wins; both go to history (US2-3).
   Two emails with the same date and different prices: the listing is flagged "conflicting prices".
 - **Listing removed**: never inferred from a listing's absence from later alerts. In v1 only the user
@@ -216,11 +218,15 @@ listings first seen in B.
 - **Zone text matches no known zone**: the listing is imported under "zone not recognised" with the
   original text shown and flagged; it is not assigned to the nearest-sounding zone. Zone-dependent
   score parts are dropped (not averaged), and the listing still appears in the ranked list.
-- **HTML-only, text-only, or both versions**: all are accepted; when both exist they must agree, and a
+- **HTML-only, text-only, or both versions**: every current sample is HTML-only, and that layout is
+  supported. Text-only alerts, and alerts carrying both versions, have no sample yet, so they are
+  reported as failed ("layout without a sample") with their content kept, and supported once a real
+  sample is added (constitution VI, FR-017). When both versions are supported they must agree; a
   disagreement on price, area or bedrooms is reported for that listing instead of picking one.
-- **Forwarded alerts** (e.g. from another household member, in the folder or in a file): accepted
-  when the original alert inside is recognisable; the detection date is the original alert's date,
-  not the forward's.
+- **Forwarded alerts** (e.g. from another household member, in the folder or in a file): no sample
+  exists, so a forwarded alert is reported as failed ("forwarded alert without a sample") with its
+  content kept; it can be re-processed once a forwarded sample is added and supported. Once
+  supported, the detection date is the original alert's date, not the forward's.
 - **Email already processed** (same email in a file and in the mailbox, or a duplicate file):
   counted as already processed, not as a failure.
 - **Alert contradicts a value the user entered** (e.g. user corrected area to 142 m², alert says
@@ -319,8 +325,11 @@ listings first seen in B.
   provider's read-only permission may cover the whole mailbox, the tool MUST NOT list, open or fetch
   any message, folder name or metadata outside the configured folder beyond what is needed to locate
   that folder, and the setup screen MUST tell the user what the permission technically allows.
-- **FR-017**: HTML-only, text-only and forwarded alerts MUST be accepted; a disagreement between the
-  HTML and text versions on price, area or bedrooms MUST be reported for that listing.
+- **FR-017**: The tool MUST accept the alert layouts covered by real samples (currently HTML-only,
+  not forwarded). Text-only, two-version and forwarded alerts MUST be reported as failed with the
+  reason "layout without a sample" and kept for re-processing (FR-010) until a real anonymised
+  sample is added and supported (FR-022). Once two-version alerts are supported, a disagreement
+  between the versions on price, area or bedrooms MUST be reported for that listing.
 - **FR-018**: Two listings with different listing codes or sources MUST be flagged "possible
   duplicate of …" (each naming the other) when they share zone, property type and bedrooms, their
   areas differ by at most 3% and their current prices by at most 5%. If any of these values is
@@ -403,8 +412,8 @@ listings first seen in B.
 ### Key Entities
 
 - **Alert email**: one processed message; where it came from (mailbox sync or file), sender portal,
-  subject, alert date, alert type, category, original content, processing outcome and reason. May be
-  forwarded (outer and inner dates).
+  subject, alert date, alert type, category, original content, processing outcome and reason, and
+  whether it is a forward (reported as failed until forwards are supported, FR-017).
 - **Listing sighting**: one appearance of a listing in one alert email; the values stated there
   (price, area, bedrooms, type, location text, link), the email date and the alert's category. Many
   sightings per listing.
@@ -467,8 +476,7 @@ listings first seen in B.
   personalizada", "chalets en tu zona personalizada" and "apartamentos en tu zona personalizada".
   Older alerts under "Viviendas en tu zona personalizada" came from more than one search (houses and
   flats), so a rule for that name cannot tell them apart.
-- Detection date is the alert email's date (the original alert's date when forwarded); the processing
-  date is recorded too.
+- Detection date is the alert email's date; the processing date is recorded too.
 - Email content may include the user's name, address and account links; it is kept in full on the
   machine only (constitution III, IX) and anonymised before being committed as fixtures (FR-024).
 - Alert emails carry only summary data, so amenity distances and other location-based parts will
@@ -533,3 +541,6 @@ listings first seen in B.
   listing (same listing code): current price, price history and an updated date (FR-020, FR-035).
   Each listing also gets a published date (from its new-listing alert), and the ranked list can be
   sorted by published or updated date (FR-036).
+- Analysis remediation (2026-10-28): text-only, two-version and forwarded alerts are reported as
+  failed until a real sample exists (FR-017, constitution VI); a relisted listing the user marked
+  "no longer available" stays so and is flagged "seen again in an alert on <date>" (FR-019).

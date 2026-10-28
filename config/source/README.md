@@ -1,0 +1,2 @@
+ine_municipios.xlsx file downloaded from https://www.ine.es/daco/inebase_mensual/febrero_2026/relacion_municipios.zip. Newest downloadeble link found in https://www.ine.es/CDINEbase/consultar.do?id_oper=73. 
+Download date 2026-10-28.

@@ -110,7 +110,9 @@ specs/001-alert-email-import/
 │   ├── mail-source.md   # mailbox access interface + Gmail rules + authorisation flow
 │   ├── cli.md           # mailbox-setup, sync, import-emails, reprocess-emails, categories
 │   └── api.md           # local HTTP API used by the UI
-└── tasks.md             # Phase 2 (/speckit-tasks)
+├── tasks.md             # Phase 2 (/speckit-tasks)
+├── handoffs/            # agent hand-off notes (docs/agent-fleet.md §6.1)
+└── reviews/             # reviewer verdicts (docs/agent-fleet.md §3.4)
 ```
 
 ### Source Code (repository root)
@@ -151,11 +153,13 @@ tests/
 ├── test_core.py              # existing
 ├── test_fixture_privacy.py   # NEW FR-024
 ├── test_idealista_alert.py   # NEW reader per fixture
-├── test_alerts.py            # NEW pipeline, outcomes, dedup, no-network, timing
-├── test_derive.py            # NEW order independence, price drops, dates, user values
-├── test_mailbox.py           # NEW Gmail/OAuth client on MockTransport, secrets never leak
+├── conftest.py               # NEW shared fixtures; autouse temp CASA_DB/CASA_NEEDS/CASA_APPDATA;
+│                             #   no_network; marker slow (timing tests, run at checkpoints)
+├── test_alerts_*.py, test_api_alerts.py      # NEW pipeline, outcomes, failures, new-since
+├── test_derive*.py, test_availability.py     # NEW order independence, prices, dates, user values
+├── test_mailbox_*.py         # NEW credentials, OAuth, Gmail client on MockTransport
 ├── test_sync.py              # NEW sync loop with fake MailSource
-└── test_scoring_v2.py        # NEW golden tests
+└── test_scoring_*.py         # NEW golden tests (one file per scoring change)
 ```
 
 **Structure Decision**: keep the single `app/` package. Mailbox access sits behind the

@@ -5,8 +5,12 @@ UI depend on this contract, not on the email layout. Reading rules: [research R9
 
 ## Input
 
-One parsed email message (headers + MIME parts), already unwrapped by the generic layer: for a
-forward, the reader receives the inner original and `forwarded = true`.
+One parsed email message (headers + MIME parts). Forwards are not unwrapped: no forwarded sample
+exists (FR-017, constitution VI). The generic layer marks an email as a forward only by its subject
+starting with `Fwd:`, `Fw:`, `RV:` or `Reenviado:` (case-insensitive) or by containing a
+`message/rfc822` part, and records it as `failed` — "forwarded alert without a sample" — without
+calling the reader. An email with a `text/plain` part (text-only or two-version) is likewise
+`failed` — "layout without a sample". Both are kept and re-processable.
 
 ## Output
 

@@ -32,11 +32,11 @@ One message, whatever its outcome (FR-010). Never deleted.
 | `content_hash` | text | sha256 of raw bytes |
 | `origin` | text | `mailbox` · `file` |
 | `file_name` | text, nullable | name as supplied (and mbox index) |
-| `sender` | text | original sender (inner message if forwarded) |
+| `sender` | text | `From` address |
 | `subject` | text | original subject, decoded |
 | `search_name` | text, nullable | the part after `en tu búsqueda:` (R9) |
 | `alert_date` | ISO date-time | original alert's `Date` header |
-| `forwarded` | 0/1 | |
+| `forwarded` | 0/1 | detected forward; outcome `failed` until forwards are supported (FR-017) |
 | `alert_type` | text | `new_listing` · `price_drop` · `unsupported` · `not_alert` |
 | `outcome` | text | `imported` · `rejected` · `failed` |
 | `reason` | text, nullable | required when outcome ≠ `imported`: what was expected and not found |
@@ -76,6 +76,7 @@ One appearance of one listing in one alert email.
 | `link_tracking` | text | as found (FR-015) |
 | `link_direct` | text | path without query, derived from the email |
 | `unrecognised` | JSON list | attribute tokens not in the reader's list |
+| `category` | text | copy of `alert_emails.category`, refreshed when rules change (FR-032) |
 | `raw_block` | text | the HTML fragment it was read from |
 
 Key: (`email_id`, `listing_id`).
@@ -98,6 +99,7 @@ New nullable columns:
 | `availability` | text | `active` (default) · `gone` (FR-019); independent of `status` |
 | `availability_changed_at` | ISO date | |
 | `merged_into` | text → `listings`, nullable | user merge (FR-018) |
+| `alert_flags` | JSON list | flags produced by derivation (price conflicts, previous-price mismatch, alert vs user value, relisted); rebuilt on each derivation and shown with the ranking flags |
 | `first_run_id` | integer → `import_runs` | run that first detected it (US6) |
 
 Derivation (R11), recomputed for a listing whenever one of its sightings changes:
@@ -113,6 +115,8 @@ Derivation (R11), recomputed for a listing whenever one of its sightings changes
 - `zone_id` from `location_text` (R10); null when not recognised.
 - `first_seen`/`last_seen` = min/max `seen_at`.
 - `published_at`, `price_updated_at`, `categories` as in the table above.
+- `availability` is never changed by derivation; if a sighting is dated after
+  `availability_changed_at` of a `gone` listing, derivation adds the relisted flag (FR-019).
 
 ## Extended: `price_history`
 
@@ -170,12 +174,29 @@ returned by any API (FR-030).
 ## Derived at ranking time (not stored)
 
 - Possible duplicate pairs (R15).
-- Flags: `<field> unknown` on hard filters; `zone not recognised: "<text>"`;
-  `alert says <value> (<date>)`; `alert says previous price <X>, recorded <Y>`;
-  `conflicting prices on <date>`; `possible duplicate of <id>`; `no longer available`;
-  `development: no unit chosen`; `new-build from alert category, confirm`;
-  `found via: unknown search`; `category rules conflict: <rules>`; `type not recognised: <text>`.
+- Flags, listed below. Flag texts are **Spanish**, like the existing flags in `app/scoring.py`;
+  tests assert these exact strings (placeholders in `<>`; dates `dd/mm/aaaa`; money `645.000 €`).
 - `SCORING_VERSION = 2`.
+
+### Flag texts
+
+| Key | Text shown (exact) | Source |
+|---|---|---|
+| unknown field on a hard filter | one of `superficie desconocida`, `habitaciones desconocidas`, `jardín desconocido`, `parcela desconocida`, `precio desconocido`, `tipo desconocido` | FR-012 |
+| zone not recognised | `zona no reconocida: "<texto>"` | FR-013 |
+| alert differs from user value | `la alerta dice <valor> (<fecha>)` | FR-023 |
+| previous price mismatch | `la alerta dice precio anterior <X>, registrado <Y>` | FR-035 |
+| same-day conflict | `precios en conflicto el <fecha>` | R11 |
+| possible duplicate | `posible duplicado de <id>` | FR-018 |
+| marked gone | `ya no disponible` | FR-019 |
+| relisted after marked gone | `vuelto a ver en una alerta el <fecha>` | FR-019 |
+| development | `promoción: sin vivienda elegida` | FR-034 |
+| new-build from category | `obra nueva según la categoría de la alerta, confirma` | FR-033 |
+| category vs email | `la categoría dice obra nueva, el email dice segunda mano` | spec edge case |
+| found via | `encontrado vía: <categoría>, …` | FR-032 |
+| no category | `encontrado vía: búsqueda desconocida` | FR-031 |
+| conflicting rules | `reglas de categoría en conflicto: <reglas>` | FR-031 |
+| type not recognised | `tipo no reconocido: <texto>` | R9 |
 
 ## Validation rules
 
