@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sqlite3
 from datetime import date
 from pathlib import Path
@@ -12,6 +13,7 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 DB_PATH = os.environ.get("CASA_DB", str(ROOT / "data" / "casa.db"))
 NEEDS_PATH = os.environ.get("CASA_NEEDS", str(ROOT / "config" / "needs.yaml"))
+NEEDS_EXAMPLE_PATH = ROOT / "config" / "needs.example.yaml"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS zones(
@@ -45,7 +47,11 @@ def connect(path: str | None = None) -> sqlite3.Connection:
 
 
 def load_needs(path: str | None = None) -> dict:
-    with open(path or NEEDS_PATH, encoding="utf-8") as f:
+    p = Path(path or NEEDS_PATH)
+    if not p.exists():  # fresh clone: needs.yaml is personal and untracked, start from the example
+        p.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(NEEDS_EXAMPLE_PATH, p)
+    with open(p, encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
