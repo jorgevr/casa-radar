@@ -45,6 +45,7 @@ Mark each article pass / n/a / violation (see `.specify/memory/constitution.md`)
 - [ ] I Honest Data: each new figure has source + date; missing data dropped and flagged, never averaged
 - [ ] II Estimates, Not Advice: money outputs labelled as estimates; defaults in editable config
 - [ ] III Local-First & Private: outbound endpoints listed, allowlisted, carry no personal data; no secrets
+  in repo/logs; mail provider only via read-only revocable permission, configured folder, no changes
 - [ ] IV Lawful Sourcing: each source's terms, access method and rate limit stated; no crawling/evasion
 - [ ] V Human in the Loop: portal content only from pages the user opened
 - [ ] VI Fail Loudly: parsers built from real samples; failure surfaces raw evidence; tests offline

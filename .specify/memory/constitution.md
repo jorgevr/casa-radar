@@ -1,5 +1,22 @@
 <!--
-Sync Impact Report
+Sync Impact Report — amendment 2026-10-23
+- Version: 1.0.0 → 1.1.0 (MINOR: Article III materially expanded with one bounded exception; no
+  existing protection removed)
+- Modified: III Local-First & Private (title unchanged) — adds the mail-provider exception
+  (read-only revocable permission, no password, only account identity + authorisation sent,
+  configured folder only, no mailbox changes, content kept locally); "no personal data in outbound
+  calls" stated explicitly; tokens added to secrets that must not be committed, logged or shown.
+- Rationale: feature 001-alert-email-import reads Idealista alerts from the household's mailbox;
+  alerts are the only discovery channel after API access was denied. Article IV already listed "the
+  user's own mailbox" as a lawful source, but Article III forbade the necessary connection.
+- Added / removed sections: none
+- Templates: ✅ .specify/templates/plan-template.md (gate III mentions the mail-provider conditions)
+             ✅ .specify/templates/spec-template.md, tasks-template.md (no change needed)
+             ✅ .claude/skills/speckit-*/SKILL.md (no references to fix)
+- Follow-up: re-run /speckit-plan for 001-alert-email-import (plan predates the amendment).
+- Deferred: TODO(V1_DATE) still unset.
+
+Previous report (1.0.0, 2026-10-22)
 - Version: template → 1.0.0 (first ratified constitution)
 - Principles: I Honest Data · II Estimates, Not Advice · III Local-First & Private · IV Lawful Sourcing ·
   V Human in the Loop · VI Fail Loudly · VII Test-First Money Maths · VIII Explainable & Reproducible ·
@@ -48,12 +65,25 @@ It informs a decision; it does not make one. This document sets rules, not techn
 
 - Personal finance data (income, savings, equity from selling the current home, needs) MUST stay on the
   user's machine and MUST NOT appear in any outbound request, log shipped elsewhere, or telemetry.
-- Outbound calls MUST go only to an explicit, reviewed allowlist of public sources.
-- Secrets and credentials MUST NOT be committed; the repository holds only examples and placeholders.
+- Outbound calls MUST go only to an explicit, reviewed allowlist of public sources, and MUST NOT carry
+  personal data.
+- Single exception, the user's own mail provider: the tool MAY connect to it to read the alerts the
+  user configured, under all of these conditions:
+  - access uses the provider's own read-only permission, granted and revocable by the user; the tool
+    MUST NOT ask for or keep the mailbox password;
+  - only the account identity and that authorisation are sent; nothing from the tool's own data
+    (finances, needs, listings, scores) is ever sent;
+  - reads are limited to the configured folder, and the tool MUST NOT change anything in the mailbox;
+  - mail content retrieved is kept only on the user's machine.
+- Secrets, credentials and authorisation tokens MUST NOT be committed, logged or displayed; they live
+  outside the repository, which holds only examples and placeholders.
 
-*Why*: the household's finances are the most sensitive data the tool touches.
+*Why*: the household's finances are the most sensitive data the tool touches; the mailbox exception
+exists because alert emails are the only practical discovery channel, and it is bounded so that it
+cannot become a path for the tool's own data to leave the machine.
 *Plan check*: the plan lists every outbound endpoint (allowlisted or added with justification) and the
-exact fields sent; none is personal. Credential storage is outside the repository.
+exact fields sent; none is personal. For the mail provider it states the permission requested, why
+read-only is enough, the folder limit, and where the authorisation is stored (outside the repository).
 
 ### IV. Lawful Sourcing
 
@@ -133,4 +163,4 @@ violation. A violation MUST be justified in Complexity Tracking or the plan does
   PATCH for wording fixes.
 - Dependent templates (plan, spec, tasks) MUST be re-checked on each amendment.
 
-**Version**: 1.0.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-22
+**Version**: 1.1.0 | **Ratified**: 2026-10-22 | **Last Amended**: 2026-10-23

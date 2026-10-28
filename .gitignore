@@ -1,2 +1,6 @@
 __pycache__/
 *.pyc
+
+# Mailbox authorisation files: must live outside the repo; ignored here as a second safety net
+client_secret*.json
+token*.json
