@@ -1,75 +1,97 @@
 # Implementation Plan: Import Candidate Homes from Portal Alert Emails
 
-**Branch**: `001-alert-email-import` | **Date**: 2026-10-23 | **Spec**: [spec.md](spec.md)
+**Branch**: `001-alert-email-import` (worktree branch `jorgevr/spec-kit`) | **Date**: 2026-10-28 |
+**Spec**: [spec.md](spec.md)
 
-**Input**: Feature specification from `/specs/001-alert-email-import/spec.md`
+**Input**: Feature specification from `/specs/001-alert-email-import/spec.md`. This plan replaces the
+file-only plan of 2026-10-23.
 
 ## Summary
 
-The user supplies saved Idealista new-listing alert emails (`.eml` / `.mbox`, from a folder or the
-UI). The tool stores every message in full, reads its listing blocks with a layout-specific reader
-built only from real anonymised samples, records each appearance as a dated *sighting*, and merges
-sightings into the existing candidate listings by Idealista listing code. Alerts never erase known
-values or overwrite values the user entered, price history is dated by the alert, and unreadable
-emails are reported with evidence. Ranking gains unknown-field flags, zone-not-recognised handling,
-possible-duplicate flags and a scoring version. No network access during import, no new
-dependencies. See [research.md](research.md).
+Casa Radar reads Idealista alerts directly from one Gmail label, through Google's read-only,
+user-revocable permission (`gmail.readonly`), every 15 minutes while the app runs and on demand;
+`.eml`/`.mbox` import stays as a secondary path into the same pipeline. Every message is stored in
+full locally; a layout reader written from the 12 real samples turns new-listing and price-drop
+alerts into dated *sightings*; listing values, price history, published and updated dates and
+"found via" categories are re-derived from all sightings, so the result never depends on
+processing order. Developments become one candidate kept out of affordability until the user picks
+a unit. Scoring gains unknown-field flags, zone-less handling, duplicate flags and a version number.
+No new dependency: OAuth and Gmail calls use `httpx` and the standard library. See
+[research.md](research.md).
 
 ## Technical Context
 
 **Language/Version**: Python 3.11+ (existing app)
 
-**Primary Dependencies**: existing only (FastAPI, uvicorn, PyYAML, pandas…). Email reading uses the
-standard library (`email`, `mailbox`, `html.parser`). No new dependency.
+**Primary Dependencies**: existing only (FastAPI, uvicorn, httpx, PyYAML, pandas). Email parsing
+with `email`, `mailbox`, `html.parser`; OAuth loopback with `http.server`, `webbrowser`,
+`secrets`; token encryption with Windows DPAPI via `ctypes` (R3, R4).
 
-**Storage**: existing local SQLite database (`data/casa.db`): new tables `import_runs`,
-`alert_emails`, `sightings`; nullable columns added to `listings` ([data-model.md](data-model.md)).
+**Storage**: local SQLite `data/casa.db` (untracked after P0): new tables `import_runs`,
+`alert_emails`, `sightings`, `mailbox_state`; nullable columns on `listings` and `price_history`
+([data-model.md](data-model.md)). Authorisation in `%LOCALAPPDATA%\casa-radar\`, outside the repo.
 
-**Testing**: pytest, offline; fixtures in `tests/fixtures/emails/`; outbound connections disabled
-in import tests.
+**Testing**: pytest, fully offline: fixtures in `tests/fixtures/emails/`, a fake `MailSource`,
+`httpx.MockTransport` for the Gmail/OAuth client, socket creation disabled in import/sync tests.
 
-**Target Platform**: the user's Windows machine, local server on 127.0.0.1.
+**Target Platform**: the user's Windows 11 machine; local server on 127.0.0.1.
 
-**Project Type**: single-user local web app + CLI (one Python package `app/`, one HTML page).
+**Project Type**: single-user local web app + CLI (package `app/`, one HTML page).
 
-**Performance Goals**: 30 emails imported in < 5 s (SC-001).
+**Performance Goals**: 30 files < 5 s (SC-001); new alert visible ≤ 16 min (SC-008); 1,000-email
+backlog < 10 min with the UI usable (SC-010).
 
-**Constraints**: zero outbound requests during import; raw emails local only; no inference of
-missing fields.
+**Constraints**: only Google OAuth/Gmail endpoints contacted, only during setup/sync (R8); no
+mailbox changes possible (read-only scope); ≤ 10 requests/s; raw emails local only; no inference
+of missing fields.
 
-**Scale/Scope**: tens of emails per batch, a few hundred listings in total.
+**Scale/Scope**: a few alerts a day, tens of thousands of messages over years at most; a few
+hundred listings.
 
-**Open (blocking one task group)**: the Idealista alert layout — see R2. Resolved only by real
-samples, not by research.
+No open NEEDS CLARIFICATION: the spec has none, and the layout questions are answered by the
+samples (R9).
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-Mark each article pass / n/a / violation (see `.specify/memory/constitution.md`):
+Mark each article pass / n/a / violation (see `.specify/memory/constitution.md`, v1.1.0):
 
-- [x] I Honest Data: **pass** — sightings carry source email and alert date; missing fields stay null
-  and show "unknown"; hard filters on unknown fields flag instead of passing (R7); zone not guessed (R6)
-- [x] II Estimates, Not Advice: **n/a** — no change to money outputs
-- [x] III Local-First & Private: **pass after prerequisite P0** — no outbound endpoint added; import
-  makes no requests (R14). **Found**: `data/casa.db` and `config/needs.yaml` are tracked by git;
-  raw emails would enter the repository. P0 untracks them before any email is stored (R10)
-- [x] IV Lawful Sourcing: **pass** — the user's own alert emails, supplied by the user; INE municipality
-  list is official open data downloaded once by hand (R6); no crawling
-- [x] V Human in the Loop: **pass** — no portal page or tracking link is ever opened (R3)
-- [x] VI Fail Loudly: **pass with gate** — reader reports problems with evidence and never guesses
-  ([alert-reader contract](contracts/alert-reader.md)); reader tasks blocked until samples exist (R2);
-  all tests offline
+- [x] I Honest Data: **pass** — each listing figure carries its sighting (email, alert date); absent
+  attributes stay null and show "unknown", never "no" (R9); hard filters on unknown fields flag
+  (R14); zones are never guessed (R10); development prices are labelled and not used as unit prices
+  (R13); published/updated dates are "unknown" when no alert gives them (FR-036).
+- [x] II Estimates, Not Advice: **pass** — no new money logic; the new-build flag from a category is
+  shown next to the cost estimate it changes (FR-033); rates stay in `needs.yaml`.
+- [x] III Local-First & Private: **pass after P0** — endpoints and fields sent listed in R8, none
+  carries the tool's data. Mail provider: permission `gmail.readonly` (read-only is enough: the
+  tool only lists and reads); limit to one label enforced on every call and re-checked per message
+  (R1, mail-source contract); no mailbox changes possible; authorisation stored DPAPI-encrypted in
+  `%LOCALAPPDATA%\casa-radar\`, outside the repository, and `client_secret*.json`/`token*.json`
+  ignored (R4). **Blocking finding**: `data/casa.db` and `config/needs.yaml` are tracked by git;
+  P0 fixes it before any email is stored (R16).
+- [x] IV Lawful Sourcing: **pass** — the user's own mailbox under Google's API terms; access by the
+  user's own OAuth client; ≤ 10 requests/s, sequential, stop on 429 (R7). INE municipality list is
+  official open data, downloaded once by hand. No portal page is fetched.
+- [x] V Human in the Loop: **pass** — no portal link, tracking link or image is ever requested
+  (R9, FR-014); data comes only from emails the portal sent to the user.
+- [x] VI Fail Loudly: **pass** — reader built from the 12 samples, which are in the repository
+  anonymised (R9, R17); unknown layouts and mismatched prices fail with evidence; unknown attribute
+  tokens are reported; sync failures stop with the reason; tests never reach Google.
 - [x] VII Test-First Money Maths: **pass** — scoring changes (duplicate thresholds, unknown-field
-  flags, zone-less medians) get golden tests with the hand calculation cited
-- [x] VIII Explainable & Reproducible: **pass** — `SCORING_VERSION` introduced (= 2) and exported
-  (R9); same-day price conflicts resolved independently of import order (R4)
-- [x] IX Keep Raw Data: **pass** — every message stored in full with reader version; re-processing
-  without the original file (R10)
-- [x] X Simplicity & Time-Box: **pass** — no new dependency (R1, R12). v1 date still
-  `TODO(V1_DATE)` in the constitution; this feature is on the v1 critical path (only discovery channel)
+  flags, zone-less medians, development exclusions, new-build flag on costs) get golden tests with
+  the hand calculation cited next to them.
+- [x] VIII Explainable & Reproducible: **pass** — `SCORING_VERSION` 1 → 2, returned and exported
+  (R14); listing values derived from sightings independent of order, ties broken deterministically
+  (R11); category rules in configuration.
+- [x] IX Keep Raw Data: **pass** — every message stored as received with origin, fetch time and
+  reader version; re-processing and category changes work from stored emails (R16).
+- [x] X Simplicity & Time-Box: **pass** — no new dependency; Google client libraries rejected in R3
+  (about eight packages for seven HTTP calls), `keyring` rejected in R4. v1 date still
+  `TODO(V1_DATE)`; this feature is on the v1 critical path (the only discovery channel). Mailbox
+  sync is the largest part; file import + reader + derivation can ship first (delivery order step 2).
 
-Post-design re-check (after Phase 1): unchanged; no violations to justify.
+Post-design re-check (after Phase 1): unchanged. No violations to justify.
 
 ## Project Structure
 
@@ -82,8 +104,9 @@ specs/001-alert-email-import/
 ├── data-model.md        # Phase 1
 ├── quickstart.md        # Phase 1
 ├── contracts/
-│   ├── alert-reader.md  # layout-specific reader contract
-│   ├── cli.md           # import-emails, reprocess-emails
+│   ├── alert-reader.md  # layout reader contract
+│   ├── mail-source.md   # mailbox access interface + Gmail rules + authorisation flow
+│   ├── cli.md           # mailbox-setup, sync, import-emails, reprocess-emails, categories
 │   └── api.md           # local HTTP API used by the UI
 └── tasks.md             # Phase 2 (/speckit-tasks)
 ```
@@ -92,45 +115,61 @@ specs/001-alert-email-import/
 
 ```text
 app/
-├── db.py                       # + new tables, nullable listing columns, idempotent migration
-├── listings.py                 # + apply_sighting(): merge rules R4/R5, field_sources
-├── scoring.py                  # + SCORING_VERSION, unknown-field flags, zone-less handling,
-│                               #   duplicate flags, availability/merged handling
-├── alerts.py                   # NEW generic layer: load .eml/.mbox, unwrap forwards, store
-│                               #   alert_emails, call reader, map outcomes, write sightings, run summary
-├── zones.py                    # NEW known-zone matching from config/zones_madrid_region.csv + districts
+├── db.py                     # + new tables/columns, idempotent migration
+├── listings.py               # + field_sources on manual/CSV writes
+├── alerts.py                 # NEW pipeline: parse/unwrap, store alert_emails, call reader,
+│                             #   outcomes, sightings, run summaries (sync and files share it)
+├── derive.py                 # NEW listing values, price history, dates, flags from sightings (R11)
+├── categories.py             # NEW rules load/save, subject → category, re-derivation (R12)
+├── zones.py                  # NEW municipality/district matching + user aliases (R10)
+├── alerts_sync.py            # NEW sync loop: window, incremental, lock, schedule, state (R5, R6)
+├── mailbox/
+│   ├── __init__.py           # MailSource protocol + errors (contract)
+│   ├── gmail.py              # NEW Gmail REST client over httpx (R1, R3, R7)
+│   ├── oauth.py              # NEW installed-app flow: PKCE, loopback, refresh (R2, R3)
+│   └── credentials.py        # NEW app folder, DPAPI encrypt/decrypt, redacted holder (R4)
 ├── providers/
-│   └── idealista_alert.py      # NEW layout-specific reader (BLOCKED until samples, R2)
-├── cli.py                      # + import-emails, reprocess-emails
-├── main.py                     # + /api/alerts/*, merge, availability, new_since_last_import
-└── static/index.html           # + import emails (Datos), unknown fields, flags, merge, mark gone,
-                                #   "new since last import" filter
+│   └── idealista_alert.py    # NEW layout reader (R9)
+├── scoring.py                # + SCORING_VERSION, unknown flags, zone-less medians,
+│                             #   developments, duplicates, availability/merge
+├── main.py                   # + /api/mailbox/*, /api/runs, /api/alerts/*, /api/categories,
+│                             #   lifespan scheduler, listing PATCH/merge additions
+├── cli.py                    # + mailbox-setup, sync, import-emails, reprocess-emails, categories
+└── static/index.html         # + sync status bar and warning, Datos: mailbox setup, file import,
+                              #   categories, failed emails; Oportunidades: dates columns + sort,
+                              #   found via, unknown fields, development label, merge, mark gone
 config/
-└── zones_madrid_region.csv     # NEW INE municipalities, province 28, with source + date
+├── alert_categories.yaml     # NEW rules (tracked)
+├── zones_madrid_region.csv   # NEW INE province 28 (tracked, with source and date)
+├── zone_aliases.example.yaml # NEW (real file untracked)
+└── needs.example.yaml        # NEW (P0; needs.yaml untracked)
 tests/
-├── fixtures/emails/            # anonymised real samples (provided by the user)
-├── test_core.py                # existing
-├── test_alerts.py              # NEW import, dedup, history, failures, no-network, timing
-├── test_idealista_alert.py     # NEW reader against each fixture (after samples)
-├── test_scoring_v2.py          # NEW golden tests for scoring changes
-└── test_fixture_privacy.py     # NEW FR-024 check
+├── fixtures/emails/          # 12 anonymised samples (done)
+├── fixtures/anonymise_eml.py # anonymiser + check (done)
+├── test_core.py              # existing
+├── test_fixture_privacy.py   # NEW FR-024
+├── test_idealista_alert.py   # NEW reader per fixture
+├── test_alerts.py            # NEW pipeline, outcomes, dedup, no-network, timing
+├── test_derive.py            # NEW order independence, price drops, dates, user values
+├── test_mailbox.py           # NEW Gmail/OAuth client on MockTransport, secrets never leak
+├── test_sync.py              # NEW sync loop with fake MailSource
+└── test_scoring_v2.py        # NEW golden tests
 ```
 
-**Structure Decision**: keep the existing single package. The generic email layer (`alerts.py`) is
-separate from the layout reader (`providers/idealista_alert.py`) so that everything except the reader
-can be built and tested now, and future portals add one reader each.
+**Structure Decision**: keep the single `app/` package. Mailbox access sits behind the
+`MailSource` contract so the sync loop is tested with fixtures and a second provider (or IMAP) would
+be one new module. The reader is the only layout-specific code.
 
 ## Delivery order
 
-1. **P0 (prerequisite, Article III)**: untrack `data/` and add it to `.gitignore`; split personal values
-   out of tracked `config/needs.yaml` (untracked local file, tracked example). Check whether earlier
-   commits of `casa.db` hold personal data before pushing.
-2. Storage + merge rules + scoring changes + generic email layer, tested with synthetic messages that
-   exercise only generic behaviour (outcome mapping, dedup, dates, forwards wrapping per RFC 822),
-   with the reader replaced by a stub that honours the contract.
-3. **After samples exist**: the Idealista reader, written from the fixtures, plus fixture tests.
-4. UI and CLI wiring; quickstart run.
+1. **P0 (prerequisite, Article III)**: untrack and ignore `data/`; untrack `config/needs.yaml`, add
+   `needs.example.yaml`; the user decides whether to rewrite history after checking old commits.
+   Move the original (non-anonymised) samples out of `C:\code\casa-radar\tests\fixtures\emails\`.
+2. **File path, usable on its own**: storage, reader, derivation, categories, zones, scoring v2,
+   `import-emails`, UI columns and sorting. Tested with the fixtures.
+3. **Mailbox**: secrets, OAuth, Gmail client, sync loop and schedule, status UI, setup screen.
+4. Quickstart run on the real account.
 
 ## Complexity Tracking
 
-No constitution violations to justify. No new dependencies.
+No constitution violations to justify. No new dependencies (alternatives rejected in R3, R4).

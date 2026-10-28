@@ -1,55 +1,65 @@
 # Contract: Alert reader
 
-The only layout-specific code. Everything else (storage, merge, ranking, UI) depends on this
-contract, not on the email layout, so it can be built and tested before the samples exist.
+The only layout-specific code (`app/providers/idealista_alert.py`). Storage, derivation, ranking and
+UI depend on this contract, not on the email layout. Reading rules: [research R9](../research.md#r9-idealista-alert-layout-from-the-12-samples).
 
 ## Input
 
-One parsed email message (headers + MIME parts), already unwrapped by the generic layer:
-if the message is a forward, the reader receives the inner original and `forwarded = true`.
+One parsed email message (headers + MIME parts), already unwrapped by the generic layer: for a
+forward, the reader receives the inner original and `forwarded = true`.
 
 ## Output
 
 ```text
 ReadResult
-  alert_type   : "new_listings" | "other_idealista" | "not_idealista"
-  listings     : list[ListingBlock]           # empty unless alert_type = new_listings
-  problems     : list[Problem]                # blocks or parts that could not be read
-  reader_version : str
+  alert_type     : "new_listing" | "price_drop" | "unsupported" | "not_alert"
+  search_name    : str | None                 # text after "en tu búsqueda:" in the subject
+  listings       : list[ListingBlock]         # exactly 1 for the current layout; 0 when not read
+  problems       : list[Problem]              # reasons the email (or a block) could not be read
+  notices        : list[str]                  # non-failing: "unrecognised attribute: <token>"
+  reader_version : str                        # "idealista-2026.10"
 
 ListingBlock
-  listing_code   : str                        # required; block is a Problem if absent
-  price, area_m2, bedrooms : number | None    # None when the email does not state it
-  property_type  : str | None
-  location_text  : str | None
-  link_tracking  : str | None                 # exactly as found
-  raw_block      : str                        # the text/HTML fragment it was read from
-  part           : "html" | "text"
+  listing_code     : str                      # required
+  price            : int | None
+  previous_price   : int | None               # price_drop only; required there
+  area_m2, bedrooms, floor : int | None
+  exterior, elevator, garage : bool | None    # True only when stated; never False from absence
+  type_text        : str | None
+  property_type    : str | None               # mapped; None for developments
+  development      : bool
+  unit_description : str | None
+  new_build_stated : bool | None              # True when stated; None otherwise
+  location_text    : str | None
+  link_tracking    : str
+  link_direct      : str                      # derived from the link path, no request made
+  raw_block        : str
 
 Problem
-  where    : str        # part and position, e.g. "html block 3"
-  expected : str        # e.g. "listing code in block"
+  where    : str        # e.g. "listing link", "price drop sentence"
+  expected : str        # e.g. "one distinct listing code"
   found    : str        # short excerpt of the raw evidence
 ```
 
 ## Rules
 
-- MUST NOT make any network request or follow any link.
+- MUST NOT make any network request, follow any link or fetch any image.
 - MUST NOT infer a value: a field not literally present is `None`.
-- MUST raise nothing for unexpected layouts; it reports them as `problems`. An email whose layout is
-  not recognised at all returns `alert_type = "new_listings"` with zero listings and one problem
-  `expected: "known new-listing layout"`, which the caller records as `failed`.
-- When both HTML and text parts carry listings, the reader returns blocks from both; the caller
-  compares them by `listing_code` (FR-017).
-- `reader_version` changes whenever the reading rules change, so stored outcomes can be re-processed.
-- Every supported layout has at least one fixture in `tests/fixtures/emails/` and a test asserting
-  the exact `ReadResult` for it (FR-022).
+- MUST NOT raise on unexpected layouts; it returns `problems`.
+- A price drop whose card price differs from the "a <new>€" price, or lacks the previous price, is a
+  problem (not read).
+- `reader_version` changes whenever these rules change.
+- Every supported alert type has fixtures and a test asserting the exact `ReadResult`
+  (FR-022): `new_listing` resale (houses, flat with attributes), `new_listing` development (2),
+  `price_drop` (houses, flat), and the 2021 layout as `unsupported`.
 
 ## Caller outcome mapping
 
-| ReadResult | Email outcome |
-|---|---|
-| `not_idealista` | `rejected` — "not a recognised alert email" |
-| `other_idealista` | `rejected` — "unsupported alert type" |
-| `new_listings`, ≥1 listing, problems for some blocks | `imported`; each problem listed in the summary |
-| `new_listings`, 0 listings | `failed` — reason from the problems |
+| ReadResult | Email outcome | Listing effect |
+|---|---|---|
+| `not_alert` | `rejected` — "not a recognised alert email" | none |
+| `unsupported` | `rejected` — "unsupported alert type" (incl. older layouts, daily summaries) | none |
+| `new_listing`/`price_drop`, 1 listing, no problems | `imported` | sighting stored; listing derived |
+| `new_listing`/`price_drop`, problems | `failed` — reason from problems | none |
+
+Notices go to the run summary and never change the outcome.

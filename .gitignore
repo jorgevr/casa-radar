@@ -4,3 +4,6 @@ __pycache__/
 # Mailbox authorisation files: must live outside the repo; ignored here as a second safety net
 client_secret*.json
 token*.json
+data\casa.db
+data/casa.db
+config/needs.yaml

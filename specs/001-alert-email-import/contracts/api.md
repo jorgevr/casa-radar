@@ -1,49 +1,84 @@
 # Contract: Local HTTP API (used by the UI)
 
-Served only on `127.0.0.1` by the existing local server.
+Served only on `127.0.0.1` by the existing local server. No endpoint returns a secret.
 
-## `POST /api/alerts/import`
+## Mailbox
 
-Request:
-
-```json
-{ "files": [ { "name": "alerta.eml", "content_base64": "..." } ] }
-```
-
-Response `200`:
+### `GET /api/mailbox`
 
 ```json
 {
-  "run_id": 7,
-  "emails": { "total": 30, "imported": 26, "already": 1, "rejected": 2, "failed": 1 },
-  "listings": { "new": 12, "updated": 3, "price_changes": 2, "unchanged": 26 },
-  "problems": [ { "file": "alerta-2026-10-20.eml", "outcome": "failed",
-                  "reason": "html bloque 3: se esperaba código de anuncio", "evidence": "…" } ],
-  "scoring_version": 2
+  "provider": "gmail", "account": "usuario@gmail.com",
+  "label_name": "Idealista", "auth_state": "valid", "auto_sync": "on",
+  "interval_minutes": 15, "backfill_from": "2026-09-28",
+  "last_success_at": "2026-10-28T11:45:02", "last_attempt_status": "ok",
+  "last_error": null, "last_error_at": null,
+  "out_of_date": false, "running": false, "progress": null,
+  "reauthorise_steps": null,
+  "app_folder": "C:\\Users\\…\\AppData\\Local\\casa-radar"
 }
 ```
 
-`400` only for a malformed request (not for unreadable emails, which are reported in `problems`).
+`out_of_date` is true when the last attempt failed or the last success is older than 30 minutes
+(FR-028). When `auth_state = revoked`, `reauthorise_steps` lists the exact steps (FR-029).
 
-## `GET /api/alerts/emails?outcome=failed|rejected|imported`
+### `POST /api/mailbox/authorise`
 
-List of stored emails with `email_id`, `file_name`, `alert_date`, `outcome`, `reason`,
-`reader_version`. Raw content is not returned in the list.
+Starts the authorisation flow (opens the browser on this machine). Response `202
+{"waiting": true}`; the UI polls `GET /api/mailbox` until `auth_state` changes or 5 minutes pass.
 
-## `GET /api/alerts/emails/{email_id}/raw`
+### `PUT /api/mailbox/folder`  `{ "label_name": "Idealista" }`
 
-The stored message as received (for inspection; local only).
+Resolves and stores the label. `404 {"error": "folder Idealista not found"}` if absent.
 
-## `POST /api/alerts/reprocess`
+### `POST /api/mailbox/sync`
 
-Body `{ "scope": "failed" | "all" }`. Response as for import.
+Runs "sync now". `202 {"run_id": 12}`; `409 {"error": "sync already running"}`.
+
+### `POST /api/mailbox/disconnect`
+
+Deletes the stored token; `auth_state = not_configured`.
+
+## Runs and emails
+
+### `GET /api/runs?limit=20` · `GET /api/runs/{run_id}`
+
+Run summary as in [data-model `import_runs`](../data-model.md#new-import_runs), plus `problems`:
+`[{email_id, alert_date, subject, outcome, reason}]` and `notices`.
+
+### `POST /api/alerts/import`  `{ "files": [ { "name": "a.eml", "content_base64": "…" } ] }`
+
+File import; response = run summary. `400` only for a malformed request.
+
+### `GET /api/alerts/emails?outcome=failed|rejected|imported` · `GET /api/alerts/emails/{id}/raw`
+
+Stored emails (list without raw); raw message for inspection (local only).
+
+### `POST /api/alerts/reprocess`  `{ "scope": "failed" | "all" }`
+
+Response = run summary.
+
+## Categories
+
+### `GET /api/categories` · `PUT /api/categories`
+
+```json
+{ "rules": [ { "contains": "obra nueva en tu zona personalizada", "category": "new-build" } ],
+  "search_names": [ { "name": "Viviendas en tu zona personalizada", "category": "unknown",
+                      "emails": 5 } ] }
+```
+
+`PUT` saves the rules and re-derives categories for all stored emails (FR-031).
 
 ## Changes to existing endpoints
 
-- `GET /api/listings`: each listing gains `floor`, `elevator`, `terrace`, `garage`, `pool`,
-  `location_text`, `availability`, `first_run_id`, `sightings` (count and latest date),
-  `links` (direct and tracking, including merged listings), `field_sources`; response includes
-  `scoring_version`. New query parameter `new_since_last_import=true` (US5).
-- `PATCH /api/listings/{id}`: accepts `availability: "active" | "gone"` (FR-019).
-- `POST /api/listings/{id}/merge` body `{ "into": "<listing id>" }`: user merge (FR-018).
-- `GET /api/export.csv`: adds a `scoring_version` column.
+- `GET /api/listings`: response gains `scoring_version` and, per listing: `published_at`,
+  `price_updated_at`, `categories`, `development`, `unit_description`, `new_build_origin`,
+  `floor`, `exterior`, `elevator`, `garage`, `terrace`, `pool`, `location_text`, `availability`,
+  `field_sources`, `first_run_id`, `sightings` (count, latest date), `links` (direct and tracking,
+  merged listings included). Query `new_since_last_run=true` (US6).
+- `PATCH /api/listings/{id}`: also accepts `availability: "active" | "gone"` (FR-019),
+  `new_build: true | false | null` (user value, FR-033), and unit values `price`, `area_m2`,
+  `bedrooms` (recorded as `manual`, FR-023/FR-034).
+- `POST /api/listings/{id}/merge`  `{ "into": "<listing id>" }` (FR-018).
+- `GET /api/export.csv`: adds `published_at`, `price_updated_at`, `found_via`, `scoring_version`.
