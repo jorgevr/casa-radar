@@ -31,3 +31,13 @@ The non-slow suite without this file still passes (72 passed).
 - "11 listings" assumes the 11 importable fixtures map to 11 distinct listing codes (as in the task text).
 - Individual messages in the mbox are re-serialised by `mailbox.mbox` ("From " escaping may alter bytes), so only
   counts and file names are asserted there.
+
+## Loop 1 additions (review finding 1)
+- `test_mbox_yielding_no_messages_is_reported` (no_network, parametrized): (a) fixture `.eml` copied to
+  `alerta.mbox` (no leading `From ` line), (b) empty `empty.mbox`. Each: n_found 1, n_failed 1, rest 0 (by hand:
+  one file = one found item = one failed item); exactly one problem, outcome `failed`, `email_id` = file name,
+  `reason` a non-empty string (wording not asserted); no `listings` / `alert_emails` rows; sum = n_found.
+  Fails now: `n_found` is 0 (file dropped silently), i.e. the missing behaviour, not a test error.
+- `test_folder_expansion_is_not_recursive`: a fixture `.eml` inside `parent/sub/` is not imported when `parent` is
+  given: counts (0,0,0,0,0), no problems, no rows. Already passes (the code is non-recursive); it guards finding 4.
+- Non-slow suite: 76 passed, only the 2 new empty-mbox cases fail.

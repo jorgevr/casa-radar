@@ -93,6 +93,49 @@ def test_msg_file_is_reported_unsupported(conn, tmp_path, no_network):
     assert conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0] == 0
 
 
+def _write_mbox_variant(tmp_path, variant):
+    path = tmp_path / ("alerta.mbox" if variant == "eml-as-mbox" else "empty.mbox")
+    if variant == "eml-as-mbox":
+        # a real fixture saved under an .mbox name: it has no leading "From " line, so it is not an mbox
+        path.write_bytes((EMAILS / MBOX_FIXTURES[0]).read_bytes())
+    else:
+        path.write_bytes(b"")
+    return path
+
+
+@pytest.mark.parametrize("variant", ["eml-as-mbox", "empty"])
+def test_mbox_yielding_no_messages_is_reported(conn, tmp_path, no_network, variant):
+    # Article VI, FR-002, SC-004: a supplied file that yields nothing must still appear in the summary
+    path = _write_mbox_variant(tmp_path, variant)
+
+    summary = alerts.import_paths(conn, [path])
+
+    # one file = one found item = one failed item (by hand: 1 / 0 / 0 / 0 / 1)
+    assert _counts(summary) == (1, 0, 0, 0, 1), summary
+    assert summary["n_imported"] + summary["n_already"] + summary["n_rejected"] + summary["n_failed"] == summary["n_found"]
+    assert len(summary["problems"]) == 1
+    problem = summary["problems"][0]
+    assert problem["outcome"] == "failed"
+    assert problem["email_id"] == path.name
+    assert isinstance(problem["reason"], str) and problem["reason"].strip()
+    assert conn.execute("SELECT COUNT(*) FROM listings").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM alert_emails").fetchone()[0] == 0
+
+
+def test_folder_expansion_is_not_recursive(conn, tmp_path, no_network):
+    folder = tmp_path / "parent"
+    sub = folder / "sub"
+    sub.mkdir(parents=True)
+    (sub / MBOX_FIXTURES[0]).write_bytes((EMAILS / MBOX_FIXTURES[0]).read_bytes())
+
+    summary = alerts.import_paths(conn, [folder])
+
+    # the only .eml is one level down, so the folder holds no .eml/.mbox of its own: nothing found
+    assert _counts(summary) == (0, 0, 0, 0, 0), summary
+    assert summary["problems"] == []
+    assert conn.execute("SELECT COUNT(*) FROM alert_emails").fetchone()[0] == 0
+
+
 @pytest.mark.slow
 def test_fixture_import_under_five_seconds(conn, no_network):
     start = time.perf_counter()
