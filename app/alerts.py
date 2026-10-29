@@ -26,7 +26,8 @@ REASON_FORWARD = "reenvío sin muestra"
 REASON_TEXT_PART = "formato sin muestra"
 REASON_UNSUPPORTED_FILE = "unsupported file format: save as .eml"
 REASON_UNREADABLE_FILE = "unreadable file: expected an .eml or .mbox file"
-EMAIL_SUFFIXES = (".eml", ".mbox")
+REASON_EMPTY_MBOX = "no messages found in .mbox file (an .eml saved with an .mbox name is not valid mbox)"
+EMAIL_SUFFIXES =(".eml", ".mbox")
 REASON_NO_DATE = "fecha del email: se esperaba una cabecera Date válida"
 
 SIGHTING_FIELDS = ("price", "previous_price", "area_m2", "bedrooms", "floor", "exterior", "elevator", "garage",
@@ -170,9 +171,12 @@ def _read_file(path: Path) -> list[tuple[str, bytes]]:
     if suffix == ".mbox":
         box = mailbox.mbox(str(path), create=False)
         try:
-            return [(f"{path.name}#{i}", box.get_bytes(key)) for i, key in enumerate(box.keys())]
+            items = [(f"{path.name}#{i}", box.get_bytes(key)) for i, key in enumerate(box.keys())]
         finally:
             box.close()
+        if not items:
+            raise mailbox.Error(REASON_EMPTY_MBOX)
+        return items
     raise ValueError(REASON_UNSUPPORTED_FILE)
 
 
@@ -203,7 +207,8 @@ def import_paths(conn, paths, kind: str = "file_cli") -> dict:
             try:
                 items += _read_file(path)
             except (ValueError, OSError, mailbox.Error) as exc:
-                reason = REASON_UNSUPPORTED_FILE if isinstance(exc, ValueError) else REASON_UNREADABLE_FILE
+                reason = (REASON_UNSUPPORTED_FILE if isinstance(exc, ValueError)
+                          else REASON_EMPTY_MBOX if str(exc) == REASON_EMPTY_MBOX else REASON_UNREADABLE_FILE)
                 _count_file_failure(conn, run_id)
                 problems.append({"email_id": path.name, "alert_date": None, "subject": None,
                                  "outcome": "failed", "reason": reason})

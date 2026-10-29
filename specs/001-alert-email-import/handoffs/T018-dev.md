@@ -24,3 +24,10 @@ File changed: `app/alerts.py` only (added `import mailbox`, `Path`, two reason c
 ## Reviewer checks
 - Tests T016 untouched; all 4 pass (3 non-slow, 1 slow) and the non-slow suite is green (75 passed).
 - Message/notice `email_id` may be `sha256:...` when there is no Message-ID.
+
+## Loop 1 fix
+- Review T016 blocking finding 1: an `.mbox` that yields zero messages is now counted as 1 found + 1 failed,
+  problem outcome `failed`, `email_id` = file name, reason `no messages found in .mbox file (an .eml saved with
+  an .mbox name is not valid mbox)` (`REASON_EMPTY_MBOX`). Implemented by raising `mailbox.Error` from `_read_file`
+  and reusing the existing `_count_file_failure`/problems path. Supersedes the "contributes nothing" note above.
+- Non-blocking finding 4a (missing path vs unsupported format) not done.
