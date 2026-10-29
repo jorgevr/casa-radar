@@ -5,11 +5,13 @@ from __future__ import annotations
 import email
 import hashlib
 import json
+import mailbox
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from email import policy
 from email.utils import parseaddr
+from pathlib import Path
 
 from . import derive
 from .db import dumps
@@ -22,6 +24,10 @@ REASON_NOT_ALERT = "no es un email de alerta reconocido"
 REASON_UNSUPPORTED = "tipo de alerta no soportado"
 REASON_FORWARD = "reenvío sin muestra"
 REASON_TEXT_PART = "formato sin muestra"
+REASON_UNSUPPORTED_FILE = "unsupported file format: save as .eml"
+REASON_UNREADABLE_FILE = "unreadable file: expected an .eml or .mbox file"
+REASON_EMPTY_MBOX = "no messages found in .mbox file (an .eml saved with an .mbox name is not valid mbox)"
+EMAIL_SUFFIXES =(".eml", ".mbox")
 REASON_NO_DATE = "fecha del email: se esperaba una cabecera Date válida"
 
 SIGHTING_FIELDS = ("price", "previous_price", "area_m2", "bedrooms", "floor", "exterior", "elevator", "garage",
@@ -144,3 +150,82 @@ def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = No
                 price_changed = before["price"] != after["price"]
         _count(conn, run_id, out, price_changed)
     return out
+
+
+def _expand(paths) -> list[Path]:
+    """Folders (non-recursive) become their .eml/.mbox files; other paths are kept as given."""
+    files: list[Path] = []
+    for path in map(Path, paths):
+        if path.is_dir():
+            files += sorted(p for p in path.iterdir() if p.is_file() and p.suffix.lower() in EMAIL_SUFFIXES)
+        else:
+            files.append(path)
+    return files
+
+
+def _read_file(path: Path) -> list[tuple[str, bytes]]:
+    """Return (file_name, raw) for each message in an .eml or .mbox file; raise ValueError if unsupported."""
+    suffix = path.suffix.lower()
+    if suffix == ".eml":
+        return [(path.name, path.read_bytes())]
+    if suffix == ".mbox":
+        box = mailbox.mbox(str(path), create=False)
+        try:
+            items = [(f"{path.name}#{i}", box.get_bytes(key)) for i, key in enumerate(box.keys())]
+        finally:
+            box.close()
+        if not items:
+            raise mailbox.Error(REASON_EMPTY_MBOX)
+        return items
+    raise ValueError(REASON_UNSUPPORTED_FILE)
+
+
+def _sort_key(item: tuple[str, bytes]) -> float:
+    """Oldest Date first; messages without a valid Date go last."""
+    try:
+        msg = email.message_from_bytes(item[1], policy=policy.default)
+        return msg["Date"].datetime.timestamp()
+    except (AttributeError, TypeError, ValueError, OverflowError, OSError):
+        return float("inf")
+
+
+def _count_file_failure(conn, run_id: int) -> None:
+    conn.execute("UPDATE import_runs SET n_found=n_found+1, n_failed=n_failed+1 WHERE run_id=?", (run_id,))
+    conn.commit()
+
+
+def import_paths(conn, paths, kind: str = "file_cli") -> dict:
+    """Import .eml/.mbox files and folders; return the run summary with its problems and notices.
+
+    A file that cannot be read or is not .eml/.mbox counts as one found and one failed item."""
+    run_id = start_run(conn, kind)
+    problems: list[dict] = []
+    notices: list[dict] = []
+    try:
+        items: list[tuple[str, bytes]] = []
+        for path in _expand(paths):
+            try:
+                items += _read_file(path)
+            except (ValueError, OSError, mailbox.Error) as exc:
+                reason = (REASON_UNSUPPORTED_FILE if isinstance(exc, ValueError)
+                          else REASON_EMPTY_MBOX if str(exc) == REASON_EMPTY_MBOX else REASON_UNREADABLE_FILE)
+                _count_file_failure(conn, run_id)
+                problems.append({"email_id": path.name, "alert_date": None, "subject": None,
+                                 "outcome": "failed", "reason": reason})
+        for file_name, raw in sorted(items, key=_sort_key):
+            out = process_message(conn, raw, origin="file", file_name=file_name, run_id=run_id)
+            if out.outcome == "already":
+                continue
+            row = conn.execute("SELECT subject, alert_date FROM alert_emails WHERE email_id=?",
+                               (out.email_id,)).fetchone()
+            ref = {"email_id": out.email_id, "alert_date": row["alert_date"], "subject": row["subject"]}
+            if out.outcome in ("rejected", "failed"):
+                problems.append({**ref, "outcome": out.outcome, "reason": out.reason})
+            notices += [{**ref, "text": text} for text in out.notices]
+    except Exception as exc:
+        finish_run(conn, run_id, "failed", type(exc).__name__)
+        raise
+    finish_run(conn, run_id, "ok")
+    summary = dict(conn.execute("SELECT * FROM import_runs WHERE run_id=?", (run_id,)).fetchone())
+    summary.pop("notes", None)
+    return {**summary, "problems": problems, "notices": notices}
