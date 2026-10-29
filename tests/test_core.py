@@ -15,7 +15,8 @@ from app.main import create_app
 from app.providers import csv_import, idealista_mcp
 from app.util import to_float
 
-NEEDS = db.load_needs(str(Path(__file__).parent.parent / "config" / "needs.yaml"))
+EXAMPLE_NEEDS = Path(__file__).parent.parent / "config" / "needs.example.yaml"
+NEEDS = db.load_needs(str(EXAMPLE_NEEDS))
 
 
 @pytest.fixture
@@ -225,8 +226,15 @@ def test_ckan_rows_pages_and_retries_403(monkeypatch):
 @pytest.fixture
 def client(tmp_path):
     needs = tmp_path / "needs.yaml"
-    needs.write_text((Path(__file__).parent.parent / "config" / "needs.yaml").read_text())
+    needs.write_text(EXAMPLE_NEEDS.read_text(encoding="utf-8"), encoding="utf-8")
     return TestClient(create_app(str(tmp_path / "t.db"), str(needs)))
+
+
+def test_load_needs_copies_example_when_missing(tmp_path):
+    target = tmp_path / "needs.yaml"
+    needs = db.load_needs(str(target))
+    assert target.read_bytes() == EXAMPLE_NEEDS.read_bytes()
+    assert needs["costs"]["itp"] == 0.06
 
 
 def test_api_end_to_end(client):
@@ -257,7 +265,7 @@ def test_api_needs_roundtrip_keeps_backup(client, tmp_path):
     n["finance"]["savings"] = 90000
     assert client.put("/api/needs", json=n).status_code == 200
     assert client.get("/api/needs").json()["finance"]["savings"] == 90000
-    assert (tmp_path / "needs.yaml.bak").read_text().startswith("# ───")
+    assert (tmp_path / "needs.yaml.bak").read_text(encoding="utf-8").startswith("# ───")
 
 
 def test_money_vs_coordinates_parsing():

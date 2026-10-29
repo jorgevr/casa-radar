@@ -1,0 +1,12 @@
+# Alert categories ("found via"), research R12. Each rule: when the search name in the alert
+# subject (the text after "en tu búsqueda:") contains `contains`, the alert gets `category`.
+# Matching compares slug() forms, so case and accents do not matter.
+#
+# The old search name "Viviendas en tu zona personalizada" covered two searches (houses and flats),
+# so it has no rule on purpose: those alerts show "encontrado vía: búsqueda desconocida".
+- contains: obra nueva en tu zona personalizada
+  category: new-build
+- contains: chalets en tu zona personalizada
+  category: house
+- contains: apartamentos en tu zona personalizada
+  category: flat
