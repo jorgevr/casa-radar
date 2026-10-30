@@ -87,6 +87,9 @@ def main(argv=None):
     elif args.cmd == "import-emails":
         from . import alerts
         summary = alerts.import_paths(conn, [Path(p) for p in args.paths])
+        # Subjects/reasons are email text: a console that cannot encode them must not lose the summary.
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(errors="backslashreplace")
         print(*format_import_summary(summary), sep="\n")
         return 1 if summary["n_failed"] > 0 else 0
     elif args.cmd == "serpavi":
