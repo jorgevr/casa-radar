@@ -1,15 +1,20 @@
 """FastAPI app: JSON API + the static single-page UI. Run: python -m app.cli serve"""
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import os
+import re
+import tempfile
 from pathlib import Path
 
 import yaml
-from fastapi import Body, FastAPI, HTTPException, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import db, mortgage, scoring
+from . import alerts, db, mortgage, scoring
 from .etl import indicators as ind_etl
 from .etl import overpass
 from .listings import upsert_listing
@@ -71,6 +76,62 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
             raise HTTPException(400, str(e)) from e
         except Exception as e:  # network / Overpass errors
             raise HTTPException(502, f"Overpass: {e}") from e
+
+    # ── alert emails: file import and runs ──────────────────────────────────
+    def run_detail(run_id: int):
+        row = conn.execute("SELECT * FROM import_runs WHERE run_id=?", (run_id,)).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        notes = json.loads(out.pop("notes") or "[]")
+        subj = {r["email_id"]: r for r in conn.execute(
+            "SELECT email_id, subject, alert_date FROM alert_emails WHERE first_run_id=? OR last_run_id=?",
+            (run_id, run_id))}
+        out["problems"] = [dict(r) for r in conn.execute(
+            "SELECT email_id, alert_date, subject, outcome, reason FROM alert_emails "
+            "WHERE first_run_id=? AND outcome IN ('rejected','failed') ORDER BY rowid", (run_id,))]
+        out["notices"] = [{"email_id": n["email_id"], "alert_date": subj[n["email_id"]]["alert_date"] if n["email_id"] in subj else None,
+                           "subject": subj[n["email_id"]]["subject"] if n["email_id"] in subj else None, "text": n["text"]} for n in notes]
+        return out
+
+    @app.post("/api/alerts/import")
+    async def import_alerts(request: Request):
+        bad = HTTPException(400, 'se esperaba {"files": [{"name": str, "content_base64": str}, ...]}')
+        try:
+            files = (await request.json()).get("files")
+        except (ValueError, AttributeError):
+            raise bad from None
+        if not isinstance(files, list) or not files:
+            raise bad
+        decoded = []
+        for f in files:
+            if not (isinstance(f, dict) and isinstance(f.get("name"), str) and isinstance(f.get("content_base64"), str)):
+                raise bad
+            try:
+                decoded.append((f["name"], base64.b64decode(f["content_base64"], validate=True)))
+            except (binascii.Error, ValueError):
+                raise bad from None
+        with tempfile.TemporaryDirectory(prefix="casa-import-") as tmp:
+            paths = []
+            for i, (name, raw) in enumerate(decoded):
+                safe = re.sub(r"[^\w.\- ]", "_", name.replace("\\", "/").rsplit("/", 1)[-1]).strip() or "file"
+                (Path(tmp) / str(i)).mkdir()
+                paths.append(Path(tmp) / str(i) / safe)
+                paths[-1].write_bytes(raw)
+            summary = alerts.import_paths(conn, paths, kind="file_ui")
+        return summary
+
+    @app.get("/api/runs")
+    def list_runs(limit: int = Query(20, ge=1, le=500)):
+        ids = [r[0] for r in conn.execute("SELECT run_id FROM import_runs ORDER BY run_id DESC LIMIT ?", (limit,))]
+        return [run_detail(i) for i in ids]
+
+    @app.get("/api/runs/{run_id}")
+    def get_run(run_id: int):
+        out = run_detail(run_id)
+        if out is None:
+            raise HTTPException(404, "run not found")
+        return out
 
     # ── zones & indicators ──────────────────────────────────────────────────
     @app.get("/api/zones")
