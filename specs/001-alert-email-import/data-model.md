@@ -19,7 +19,7 @@ One sync (scheduled or "sync now") or one file import.
 | `n_found` | integer | emails found (sync) or supplied (files) |
 | `n_imported`, `n_already`, `n_rejected`, `n_failed` | integer | sum = `n_found` when finished (FR-002, SC-004) |
 | `n_new_listings`, `n_updated_listings`, `n_price_changes` | integer | for the summary |
-| `notes` | JSON list | non-failing notices: unrecognised attributes, "folder identity changed" |
+| `notes` | JSON list | non-failing notices (`{email_id, text}`): unrecognised attributes, "folder identity changed"; and whole-file failures, tagged (`{email_id: file name, outcome: "failed", reason}`) |
 
 ## New: `alert_emails`
 
