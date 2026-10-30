@@ -189,8 +189,12 @@ def _sort_key(item: tuple[str, bytes]) -> float:
         return float("inf")
 
 
-def _count_file_failure(conn, run_id: int) -> None:
-    conn.execute("UPDATE import_runs SET n_found=n_found+1, n_failed=n_failed+1 WHERE run_id=?", (run_id,))
+def _count_file_failure(conn, run_id: int, file_name: str, reason: str) -> None:
+    """Count a whole-file failure and keep it in the run's notes as a tagged entry (no alert_emails row)."""
+    run = conn.execute("SELECT notes FROM import_runs WHERE run_id=?", (run_id,)).fetchone()
+    notes = json.loads(run["notes"] or "[]") + [{"email_id": file_name, "outcome": "failed", "reason": reason}]
+    conn.execute("UPDATE import_runs SET n_found=n_found+1, n_failed=n_failed+1, notes=? WHERE run_id=?",
+                 (dumps(notes), run_id))
     conn.commit()
 
 
@@ -209,7 +213,7 @@ def import_paths(conn, paths, kind: str = "file_cli") -> dict:
             except (ValueError, OSError, mailbox.Error) as exc:
                 reason = (REASON_UNSUPPORTED_FILE if isinstance(exc, ValueError)
                           else REASON_EMPTY_MBOX if str(exc) == REASON_EMPTY_MBOX else REASON_UNREADABLE_FILE)
-                _count_file_failure(conn, run_id)
+                _count_file_failure(conn, run_id, path.name, reason)
                 problems.append({"email_id": path.name, "alert_date": None, "subject": None,
                                  "outcome": "failed", "reason": reason})
         for file_name, raw in sorted(items, key=_sort_key):
