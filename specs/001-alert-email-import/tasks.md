@@ -95,7 +95,7 @@ processed, 0 new.
 ### Implementation
 
 - [x] T018 [US3] In `app/alerts.py` add `import_paths(conn, paths, kind="file_cli") -> run summary dict`: expand folders (non-recursive) to `*.eml`/`*.mbox`, read `.mbox` with `mailbox.mbox` (file name = `name#index`), process messages oldest `Date` first, record problems and notices, return the summary structure used by CLI and API
-- [ ] T019 [US3] Add `import-emails PATH [PATH ...]` to `app/cli.py` printing the summary format of [contracts/cli.md](contracts/cli.md) (FALLO/RECHAZADO/AVISO lines, totals); exit code 0, or 1 if any email failed
+- [x] T019 [US3] Add `import-emails PATH [PATH ...]` to `app/cli.py` printing the summary format of [contracts/cli.md](contracts/cli.md) (FALLO/RECHAZADO/AVISO lines, totals); exit code 0, or 1 if any email failed
 - [x] T020 [US3] Add `POST /api/alerts/import` and `GET /api/runs`, `GET /api/runs/{run_id}` to `app/main.py` per [contracts/api.md](contracts/api.md) (JSON body `{files:[{name, content_base64}]}`, no multipart)
 - [ ] T021 [US3] In `app/static/index.html` Datos tab, add "Importar emails de alerta": a multi-file picker (`.eml,.mbox`) that base64-encodes files in the browser, calls `/api/alerts/import`, and shows the summary with its problem lines; in the listing detail show source "Idealista (email de alerta)", the email date(s) and the subject(s) it came from (US1-4)
 
