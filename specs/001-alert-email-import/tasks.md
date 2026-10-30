@@ -89,14 +89,14 @@ processed, 0 new.
 
 ### Tests first
 
-- [ ] T016 [P] [US3] Add `tests/test_alerts_import.py::test_import_fixture_folder` (with `no_network`): `import_paths(conn, [fixtures dir])` → run counts as above and sum = 12 (FR-002, SC-004); 11 listings with price, area-or-development, link (SC-002); second import → all `already`; a `.mbox` built in `tmp_path` from 3 fixtures imports 3; a `.msg` file is reported as "unsupported file format: save as .eml"; timing of the fixture import < 5 s (SC-001) in a separate test marked `@pytest.mark.slow`
-- [ ] T017 [P] [US3] Add `tests/test_api_alerts.py::test_api_import` using `TestClient`: `POST /api/alerts/import` with two base64 fixtures → run summary per [contracts/api.md](contracts/api.md); malformed body → 400
+- [x] T016 [P] [US3] Add `tests/test_alerts_import.py::test_import_fixture_folder` (with `no_network`): `import_paths(conn, [fixtures dir])` → run counts as above and sum = 12 (FR-002, SC-004); 11 listings with price, area-or-development, link (SC-002); second import → all `already`; a `.mbox` built in `tmp_path` from 3 fixtures imports 3; a `.msg` file is reported as "unsupported file format: save as .eml"; timing of the fixture import < 5 s (SC-001) in a separate test marked `@pytest.mark.slow`
+- [x] T017 [P] [US3] Add `tests/test_api_alerts.py::test_api_import` using `TestClient`: `POST /api/alerts/import` with two base64 fixtures → run summary per [contracts/api.md](contracts/api.md); malformed body → 400
 
 ### Implementation
 
-- [ ] T018 [US3] In `app/alerts.py` add `import_paths(conn, paths, kind="file_cli") -> run summary dict`: expand folders (non-recursive) to `*.eml`/`*.mbox`, read `.mbox` with `mailbox.mbox` (file name = `name#index`), process messages oldest `Date` first, record problems and notices, return the summary structure used by CLI and API
-- [ ] T019 [US3] Add `import-emails PATH [PATH ...]` to `app/cli.py` printing the summary format of [contracts/cli.md](contracts/cli.md) (FALLO/RECHAZADO/AVISO lines, totals); exit code 0, or 1 if any email failed
-- [ ] T020 [US3] Add `POST /api/alerts/import` and `GET /api/runs`, `GET /api/runs/{run_id}` to `app/main.py` per [contracts/api.md](contracts/api.md) (JSON body `{files:[{name, content_base64}]}`, no multipart)
+- [x] T018 [US3] In `app/alerts.py` add `import_paths(conn, paths, kind="file_cli") -> run summary dict`: expand folders (non-recursive) to `*.eml`/`*.mbox`, read `.mbox` with `mailbox.mbox` (file name = `name#index`), process messages oldest `Date` first, record problems and notices, return the summary structure used by CLI and API
+- [x] T019 [US3] Add `import-emails PATH [PATH ...]` to `app/cli.py` printing the summary format of [contracts/cli.md](contracts/cli.md) (FALLO/RECHAZADO/AVISO lines, totals); exit code 0, or 1 if any email failed
+- [x] T020 [US3] Add `POST /api/alerts/import` and `GET /api/runs`, `GET /api/runs/{run_id}` to `app/main.py` per [contracts/api.md](contracts/api.md) (JSON body `{files:[{name, content_base64}]}`, no multipart)
 - [ ] T021 [US3] In `app/static/index.html` Datos tab, add "Importar emails de alerta": a multi-file picker (`.eml,.mbox`) that base64-encodes files in the browser, calls `/api/alerts/import`, and shows the summary with its problem lines; in the listing detail show source "Idealista (email de alerta)", the email date(s) and the subject(s) it came from (US1-4)
 
 **Checkpoint**: quickstart §2 passes. The tool is usable with saved alert files.
