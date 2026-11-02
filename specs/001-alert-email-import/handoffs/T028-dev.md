@@ -28,3 +28,13 @@ Files: `app/scoring.py`, `config/needs.example.yaml` (only other file touched; n
   by an ad-hoc script in the temp folder (not committed).
 - The ad-hoc script briefly created the worktree's ignored `data/casa.db` (CASA_DB unset in that shell call, contained only
   synthetic rows); it was deleted immediately. No real data was touched.
+
+## Fix loop 1 (review findings), app/scoring.py only
+- Merge chains: `rank()` follows `merged_into` to the final target, so with A->B, B->C, C.merged_links has A's and B's urls.
+  A cycle stops the walk; every cycle member is merged, so none is returned and nothing crashes.
+  If the final target id does not exist, its links are simply not shown.
+- `build_context` (hence `rank` and `zone_table`) reads only listings with `merged_into` null or empty: merged rows no longer
+  feed medians, counts or the minimum-count threshold.
+- Unknown property type (`UNKNOWN_TYPES` = None, '', 'otro') never gets a duplicate flag. Decision: 'otro' is treated as unknown
+  because `norm_type` maps missing and unmapped text to it (review finding 3); a genuine "otro" is therefore also never flagged.
+- All 139 non-slow tests pass, including the 21 new ones; no test edited.
