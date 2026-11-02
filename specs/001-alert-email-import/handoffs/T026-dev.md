@@ -52,3 +52,13 @@ Decision not in the docs (forced by test 1): `url` and `title` that are already 
 their recorded origin is `alert` (so an API/user title survives an alert; alert-created titles still follow later alerts).
 Consequence: listings whose title was written by derivation before this fix have no `title` origin and are now frozen.
 Gates: compileall OK; pytest -m "not slow" 138 passed; anonymise check rc=0; forbidden-path diff clean; requirements.txt diff empty.
+
+## Fix loop 3 (review round 2), app/derive.py only
+1. Order independence: url = latest non-null `link_direct`; title from the latest type/location text; municipality/district/zone_id
+   from the latest location text that resolves a zone. The stored row is a fallback only when no sighting supplies a value.
+2. Legacy rows: a stored url/title is kept only when its `field_sources` origin is a known non-alert source (manual, csv,
+   idealista_api). Origin missing or `alert` -> overwritten from sightings. The zone trio is still protected only for manual/csv.
+   This supersedes the fix-loop-1 decision (frozen titles).
+3. Labels: `alert` is set only for non-null values an alert wrote (zone trio included); a field written null loses its label
+   (so a district cleared by an alert zone has no label). Kept values keep their origin.
+Gates: compileall OK; pytest -m "not slow" 146 passed; anonymise rc=0; forbidden-path diff empty; requirements diff empty; no stray data/.

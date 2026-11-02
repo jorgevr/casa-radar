@@ -68,7 +68,9 @@ def derive_listing(conn, listing_id: str) -> None:
     price, price_updated_at, history, flags = _price_rules(rows)
     if price is None and existing is not None:
         price = existing["price"]
-    zone_id, municipality, district = zones.match_zone(v["location_text"], conn)
+    zone_id, municipality, district = next(  # latest location text that resolves a zone, else none
+        (z for z in (zones.match_zone(r["location_text"], conn) for r in reversed(rows)) if z[0]),
+        (None, None, None))
     stated_new_build = any(r["new_build_stated"] for r in rows)
     new_build, new_build_origin = (1, "email") if stated_new_build else (None, None)
     if existing is not None and (existing["new_build_origin"] == "user" or not stated_new_build):
@@ -77,7 +79,7 @@ def derive_listing(conn, listing_id: str) -> None:
     title = " en ".join(t for t in (v["type_text"], v["location_text"]) if t) or None
 
     values = {
-        "source": "idealista", "url": rows[-1]["link_direct"], "title": title,
+        "source": "idealista", "url": _latest(rows, "link_direct"), "title": title,
         "property_type": v["property_type"], "price": price,
         "area_m2": v["area_m2"], "bedrooms": v["bedrooms"], "floor": v["floor"],
         "exterior": v["exterior"], "elevator": v["elevator"], "garage": v["garage"],
@@ -92,8 +94,10 @@ def derive_listing(conn, listing_id: str) -> None:
     price_owned = existing is not None and existing["price"] is not None and sources.get("price") in USER_ORIGINS
     if existing is not None:
         # an alert never writes null over a known value (FR-011); the zone trio moves together
-        for col in ("url", "title"):  # also kept when another source (API, user) supplied it
-            if values[col] is None or (existing[col] is not None and sources.get(col) != "alert"):
+        kept_ids = {col for col in ("url", "title") if existing[col] is not None
+                    and sources.get(col) not in (None, "alert")}  # user or API value (legacy/alert ones are re-derived)
+        for col in ("url", "title"):
+            if col in kept_ids or values[col] is None:
                 values[col] = existing[col]
         if zone_id is None:
             values["municipality"], values["district"], values["zone_id"] = (
@@ -115,11 +119,17 @@ def derive_listing(conn, listing_id: str) -> None:
             values["district"], values["zone_id"] = existing["district"], existing["zone_id"]
     if price_owned:  # no alert changed the listing's price: no updated date, no alert price series (FR-007, FR-036)
         values["price_updated_at"], history = existing["price_updated_at"], []
-    stated = {"price": _alert_price(rows), "url": rows[-1]["link_direct"], "title": title,
+    stated = {"price": _alert_price(rows), "url": _latest(rows, "link_direct"), "title": title,
+              "municipality": municipality, "district": district, "zone_id": zone_id,
               **{col: _latest(rows, col) for col in ATTRIBUTES}}
+    for col in kept_ids if existing is not None else ():
+        stated.pop(col)
     for col, alert_value in stated.items():  # 'alert' only where an alert supplied the stored value
         if alert_value is not None and values.get(col) == alert_value and sources.get(col) not in USER_ORIGINS:
             sources[col] = "alert"
+    for col, value in values.items():  # a field left null has no origin
+        if value is None:
+            sources.pop(col, None)
     values["field_sources"] = json.dumps(sources, sort_keys=True)
     values["alert_flags"] = json.dumps(flags, ensure_ascii=False)
     if existing is None:
