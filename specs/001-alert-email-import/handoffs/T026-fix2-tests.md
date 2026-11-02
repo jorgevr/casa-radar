@@ -28,8 +28,8 @@ Expected values are hand-derived, reasoning in comments.
 
 ## For the developer / reviewer
 
-- Decision not in the docs: the zone trio's `district` is asserted to be labelled "alert" even though the
-  alert's value is null (the trio moves together). If the developer prefers to drop the label for a null
-  district, that assertion is the one to discuss with the user.
+- Coordinator ruling: field_sources records only non-null fields. The zone-trio test asserts the 'alert'
+  label for municipality and zone_id only; district (null in the alert) must not be labelled 'alert': absent
+  if cleared, or kept with its original `idealista_api` label if the stored value is kept (FR-011).
 - Fresh databases are built inline (`db.connect(":memory:")` + `seed_madrid_districts`), so the same test can
   derive two separate databases.
