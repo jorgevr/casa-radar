@@ -89,7 +89,15 @@ def derive_listing(conn, listing_id: str) -> None:
         "published_at": min(new_listing_days) if new_listing_days else None,
         "price_updated_at": price_updated_at,
     }
+    price_owned = existing is not None and existing["price"] is not None and sources.get("price") in USER_ORIGINS
     if existing is not None:
+        # an alert never writes null over a known value (FR-011); the zone trio moves together
+        for col in ("url", "title"):  # also kept when another source (API, user) supplied it
+            if values[col] is None or (existing[col] is not None and sources.get(col) != "alert"):
+                values[col] = existing[col]
+        if zone_id is None:
+            values["municipality"], values["district"], values["zone_id"] = (
+                existing["municipality"], existing["district"], existing["zone_id"])
         # a value the user entered is never written; a differing alert value is flagged instead (FR-023)
         def protected(col):
             return existing[col] is not None and sources.get(col) in USER_ORIGINS
@@ -105,8 +113,12 @@ def derive_listing(conn, listing_id: str) -> None:
                 values[col] = existing[col]
         if protected("municipality"):  # zone follows the user's municipality, not the alert's location text
             values["district"], values["zone_id"] = existing["district"], existing["zone_id"]
-    for col in ("price", *ATTRIBUTES):
-        if col in values and values[col] is not None and sources.get(col) not in USER_ORIGINS:
+    if price_owned:  # no alert changed the listing's price: no updated date, no alert price series (FR-007, FR-036)
+        values["price_updated_at"], history = existing["price_updated_at"], []
+    stated = {"price": _alert_price(rows), "url": rows[-1]["link_direct"], "title": title,
+              **{col: _latest(rows, col) for col in ATTRIBUTES}}
+    for col, alert_value in stated.items():  # 'alert' only where an alert supplied the stored value
+        if alert_value is not None and values.get(col) == alert_value and sources.get(col) not in USER_ORIGINS:
             sources[col] = "alert"
     values["field_sources"] = json.dumps(sources, sort_keys=True)
     values["alert_flags"] = json.dumps(flags, ensure_ascii=False)

@@ -40,3 +40,15 @@ recorded `manual`, not `csv`; call sites intentionally unchanged.
 - The merge of `alert_flags` into ranking flags is T028 in scoring.py (not here).
 - Gates: compileall OK; pytest -m "not slow": 132 passed; anonymise check no output/OK; diff names only app/listings.py,
   derive via this commit, handoffs, the two test files; requirements.txt diff empty.
+
+## Fix loop 1 (review findings 1-3), app/derive.py only
+1. FR-011: `url` and `title` fall back to the stored value when the alert gives null. The zone trio
+   (municipality, district, zone_id) moves together: when the alert's location matches no zone, all three keep the stored values.
+2. User-owned price (`field_sources.price` manual/csv, value non-null): `price_updated_at` keeps its stored value and no
+   `alert`/`alert_previous` rows are written (existing alert rows are removed). The price flag still applies.
+3. `field_sources`: `alert` is set only when the stored value equals what an alert stated (price, url, title, attributes);
+   kept fallback values keep their origin.
+Decision not in the docs (forced by test 1): `url` and `title` that are already known are NOT replaced by the alert unless
+their recorded origin is `alert` (so an API/user title survives an alert; alert-created titles still follow later alerts).
+Consequence: listings whose title was written by derivation before this fix have no `title` origin and are now frozen.
+Gates: compileall OK; pytest -m "not slow" 138 passed; anonymise check rc=0; forbidden-path diff clean; requirements.txt diff empty.
