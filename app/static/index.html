@@ -71,6 +71,7 @@ function detail(l){const e=l.eval,m=e.mortgage;
   <p class="mut">Referencia de precio: ${e.benchmark_m2?eur(e.benchmark_m2)+'/m² ('+esc(e.benchmark_source)+')':'ninguna'} · cobertura de datos ${pct(e.coverage)}</p></div>`;
   if(m)h+=`<div><h3>Hipoteca (estimación)</h3><div class="kv"><span class="mut">Impuestos + gastos</span><span>${eur(m.taxes+m.other_costs)}</span><span class="mut">Préstamo (LTV ${pct(m.ltv)})</span><span>${eur(m.loan)}</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span>
     ${m.stress.map(s=>`<span class="mut">Tipo ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio)+')':''}</span>`).join('')}</div></div>`;
+  h+=`<p class="mut">Fuente: ${l.source==='idealista'?'Idealista':esc(l.source||'desconocido')} · visto por primera vez: ${esc(l.first_seen||'desconocido')} · última vez: ${esc(l.last_seen||'desconocido')}</p>`;
   const a=Object.entries(e.amenities);h+=`<div><h3>Servicios cercanos (OSM)</h3>${a.length?`<div class="kv">${a.map(([k,v])=>`<span class="mut">${esc(k)}</span><span>${v.nearest_m} m</span>`).join('')}</div>`:'<span class="mut">sin calcular</span>'}</div></div>`;
   if(e.excluded.length)h+=`<h3>No cumple tus filtros</h3><ul class="fl bad">${e.excluded.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
   if(e.flags.length)h+=`<h3>Avisos</h3><ul class="fl warn">${e.flags.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
@@ -109,12 +110,30 @@ function renderMortgage(){
   $('#go').onclick=async()=>{const q=new URLSearchParams({price:$('#p').value,savings:$('#s').value,years:$('#y').value,tin:$('#t').value,new_build:$('#n').value});if($('#i').value)q.set('income',$('#i').value);
     try{const m=await api('/mortgage?'+q);$('#out').innerHTML=`<div class="kv"><span class="mut">Impuestos</span><span>${eur(m.taxes)}</span><span class="mut">Otros gastos</span><span>${eur(m.other_costs)}</span><span class="mut">Préstamo</span><span>${eur(m.loan)} (LTV ${pct(m.ltv)})</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span><span class="mut">Ahorro mínimo para entrar</span><span>${eur(m.min_savings_needed)} ${m.savings_shortfall>0?`<span class="bad">(faltan ${eur(m.savings_shortfall)})</span>`:''}</span>${m.effort_ratio!=null?`<span class="mut">Esfuerzo</span><span>${pct(m.effort_ratio,1)}</span>`:''}${m.stress.map(s=>`<span class="mut">Con TIN ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio,1)+')':''}</span>`).join('')}</div>`}catch(err){toast(err.message,1)}}}
 
+const plural=(n,one,many)=>`${n} ${n===1?one:many}`;
+const readB64=f=>new Promise((ok,ko)=>{const r=new FileReader();r.onload=()=>ok(String(r.result).slice(String(r.result).indexOf(',')+1));r.onerror=()=>ko(new Error('No se pudo leer el archivo '+f.name));r.readAsDataURL(f)});
+function importLines(s){const line=(lab,x,t)=>`<div><b class="${lab==='AVISO'?'warn':'bad'}">${lab}</b> <span class="mut">${esc((x.alert_date||'').slice(0,10)||'sin fecha')}</span> ${esc(x.subject||x.email_id||'')} — ${esc(t||'')}</div>`;
+  return s.problems.map(p=>line(p.outcome==='failed'?'FALLO':'RECHAZADO',p,p.reason)).concat(s.notices.map(n=>line('AVISO',n,n.text))).join('')+
+  `<div style="margin-top:6px"><b>${plural(s.n_found,'email','emails')}: ${plural(s.n_imported,'importado','importados')}, ${plural(s.n_already,'ya procesado','ya procesados')}, ${plural(s.n_rejected,'rechazado','rechazados')}, ${plural(s.n_failed,'fallido','fallidos')}</b></div>
+  <div>anuncios: ${plural(s.n_new_listings,'nuevo','nuevos')}, ${plural(s.n_updated_listings,'actualizado','actualizados')} (${plural(s.n_price_changes,'cambio','cambios')} de precio)</div>`}
+async function importAlerts(){
+  const fs=[...$('#af').files],b=$('#ab'),o=$('#ao');
+  if(!fs.length){o.innerHTML='<span class="warn">Elige al menos un archivo .eml o .mbox.</span>';return}
+  b.disabled=true;o.innerHTML='<span class="mut">Importando…</span>';
+  try{const files=[];for(const f of fs)files.push({name:f.name,content_base64:await readB64(f)});
+    const s=await api('/alerts/import',{method:'POST',body:{files}});
+    o.innerHTML=importLines(s);$('#af').value='';
+  }catch(e){o.innerHTML=`<span class="bad">No se pudo importar: ${esc(e instanceof TypeError?'sin conexión con el servidor local':e.message)}</span>`}
+  finally{b.disabled=false}}
+
 function renderData(){
-  $('#main').innerHTML=`<div class="card"><h3 style="margin-top:0">Idealista (vía idealista-mcp)</h3><p class="mut">Requiere config/providers.yaml y tus credenciales de la API de Idealista. Argumentos opcionales como JSON, p. ej. <code>{"center":"40.3458,-3.8249","distance":3000}</code>.</p><div class="row2"><input id="ia" style="flex:1" placeholder="{} (usa los de providers.yaml)"><button class="b p" id="ib">Buscar e importar</button></div></div>
+  $('#main').innerHTML=`<div class="card"><h3 style="margin-top:0">Importar emails de alerta</h3><p class="mut">Archivos <code>.eml</code> o <code>.mbox</code> guardados de las alertas de Idealista. Se leen en tu navegador y se envían solo a este servidor local.</p><div class="row2"><input type="file" id="af" accept=".eml,.mbox" multiple><button class="b p" id="ab">Importar emails</button></div><div id="ao" style="margin-top:10px"></div></div>
+  <div class="card"><h3 style="margin-top:0">Idealista (vía idealista-mcp)</h3><p class="mut">Requiere config/providers.yaml y tus credenciales de la API de Idealista. Argumentos opcionales como JSON, p. ej. <code>{"center":"40.3458,-3.8249","distance":3000}</code>.</p><div class="row2"><input id="ia" style="flex:1" placeholder="{} (usa los de providers.yaml)"><button class="b p" id="ib">Buscar e importar</button></div></div>
   <div class="card"><h3 style="margin-top:0">Anuncios (CSV)</h3><p class="mut">Columnas: url,title,property_type,price,area_m2,bedrooms,bathrooms,plot_m2,garden,new_build,lat,lon,municipality,district,neighborhood</p><textarea id="lc" placeholder="pega aquí el CSV"></textarea><p><button class="b p" id="lb">Importar anuncios</button></p></div>
   <div class="card"><h3 style="margin-top:0">Añadir un anuncio a mano</h3><div class="grid">${['url','title','price','area_m2','bedrooms','plot_m2','lat','lon','municipality','district'].map(k=>`<label>${k}<input data-m="${k}"></label>`).join('')}<label>property_type<select data-m="property_type"><option>chalet</option><option>adosado</option><option>pareado</option><option>bajo</option><option>piso</option><option>atico</option></select></label><label>garden<select data-m="garden"><option value="">?</option><option value="1">sí</option><option value="0">no</option></select></label></div><p><button class="b p" id="mb">Añadir</button></p></div>
   <div class="card"><h3 style="margin-top:0">Indicadores (CSV)</h3><p class="mut">Columnas: zone,key,value[,source,year]. Ejemplo: <code>madrid/chamberi,notary_price_m2_flat,6120,Notariado,2026</code></p><textarea id="ic"></textarea><p><button class="b p" id="ib2">Importar indicadores</button></p></div>`;
   const go=(id,fn)=>$(id).onclick=async()=>{try{toast(await fn())}catch(e){toast(e.message,1)}};
+  $('#ab').onclick=importAlerts;
   go('#ib',async()=>{const t=$('#ia').value.trim();const r=await api('/providers/idealista/search',{method:'POST',body:t?JSON.parse(t):{}});return r.imported+' anuncios importados'});
   go('#lb',async()=>{const r=await api('/listings/import-csv',{method:'POST',body:$('#lc').value});return r.imported+' anuncios importados'});
   go('#ib2',async()=>{const r=await api('/indicators/import-csv',{method:'POST',body:$('#ic').value});return r.imported+' indicadores importados'});
