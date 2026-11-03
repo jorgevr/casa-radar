@@ -132,6 +132,8 @@ def derive_listing(conn, listing_id: str) -> None:
               **{col: _latest(rows, col) for col in ATTRIBUTES}}
     for col in kept_ids if existing is not None else ():
         stated.pop(col)
+    if existing is not None and protected("municipality"):  # the user's zone is never labelled 'alert', whatever the sightings say
+        stated.pop("district"), stated.pop("zone_id")
     for col, alert_value in stated.items():  # 'alert' only where an alert supplied the stored value
         if alert_value is not None and values.get(col) == alert_value and sources.get(col) not in USER_ORIGINS:
             sources[col] = "alert"
