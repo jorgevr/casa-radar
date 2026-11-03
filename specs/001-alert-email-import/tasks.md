@@ -154,7 +154,7 @@ Getafe "house", Alcalá piso "flat", Algete (old "Viviendas" search) "unknown se
 - [x] T033 [US1] Create `app/categories.py`: load/save `config/alert_categories.yaml`; `categorise(subject_or_search_name) -> (category, matched_rules)` on `slug()` text; `recategorise_all(conn)` updating `alert_emails.category`, `category_rules_matched`, copying to sightings and calling `derive.derive_listing` for affected listings
 - [x] T034 [US1] Wire categories: `app/alerts.py` sets the category when storing an email; `app/derive.py` computes `categories` and `new_build`/`new_build_origin` per data-model; `app/scoring.py` adds flags "encontrado vía: …", "búsqueda desconocida", "reglas de categoría en conflicto: …", and the new-build-from-category flag next to the mortgage estimate
 - [x] T035 [US1] Add `GET/PUT /api/categories` to `app/main.py` and `categories` command to `app/cli.py` per contracts; `PATCH /api/listings/{id}` accepts `new_build: true|false|null` stored as user value (`new_build_origin='user'`)
-- [ ] T036 [US1] In `app/static/index.html`: Datos tab section "Categorías de alerta" listing rules (editable rows) and each stored search name with its category and email count; listing detail shows "encontrado vía: …" and, on the mortgage block, the confirm/override control for the new-build flag
+- [x] T036 [US1] In `app/static/index.html`: Datos tab section "Categorías de alerta" listing rules (editable rows) and each stored search name with its category and email count; listing detail shows "encontrado vía: …" and, on the mortgage block, the confirm/override control for the new-build flag
 
 **Checkpoint**: categories work for imported files.
 
