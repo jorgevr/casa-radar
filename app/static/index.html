@@ -32,6 +32,10 @@ button.b{cursor:pointer}button.b.p{background:var(--acc);color:#fff;border-color
 </header>
 <main id="main"></main>
 <script>
+// Must equal, character for character, the flag appended in app/scoring.py (new_build_origin == "category"); keep in sync.
+const errTxt=(pre,er)=>er instanceof TypeError?'Sin conexión con el servidor local.':pre+' (detalle: '+er.message+')';
+const renderWarn=er=>'Guardado, pero no se pudo actualizar la vista (detalle: '+er.message+'). Recarga la página.';
+const NB_FLAG='obra nueva según la categoría de la alerta, confirma';
 const $=(s,r=document)=>r.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const eur=n=>n==null?'—':Math.round(n).toLocaleString('es-ES')+' €';
@@ -52,10 +56,9 @@ const GONE_FLAG='ya no disponible',RELISTED=/^vuelto a ver en una alerta el /;
 const isGone=l=>!!l&&l.availability==='gone';
 const relistedFlag=l=>((l&&l.eval&&l.eval.flags)||[]).find(f=>RELISTED.test(f))||null;
 const availBusy=new Set();
-const availError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de disponibilidad no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo cambiar la disponibilidad: '+er.message;
-const NB_FLAG='obra nueva según la categoría de la alerta, confirma';
-const nbBusy=new Set();
-const nbError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de obra nueva no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar obra nueva: '+er.message;
+const availError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de disponibilidad no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo cambiar la disponibilidad (detalle: '+er.message+')';
+const nbBusy=new Set(),mergeBusy=new Set();
+const nbError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de obra nueva no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar obra nueva (detalle: '+er.message+')';
 const NB_ORIGIN={email:'según el email',category:'según la categoría de la alerta',user:'valor tuyo'};
 function nbBlock(l){const v=l.new_build,o=l.new_build_origin,id=esc(l.id);
   const cur=v==null?'desconocido':(v?'obra nueva':'segunda mano');
@@ -67,7 +70,7 @@ function nbBlock(l){const v=l.new_build,o=l.new_build_origin,id=esc(l.id);
 // rules editor: pure helpers (tested with node)
 function cleanRules(rows){return rows.map(r=>({contains:String(r.contains??'').trim(),category:String(r.category??'').trim()}))}
 function rulesProblem(rows){const c=cleanRules(rows);for(let i=0;i<c.length;i++){if(!c[i].contains)return `La regla ${i+1} no tiene texto «contiene».`;if(!c[i].category)return `La regla ${i+1} no tiene categoría.`}return null}
-const catErr=er=>er.status===400?'Reglas no válidas: '+er.message:er.status===500?'El servidor no pudo guardar las reglas de categoría: '+er.message:er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar: '+er.message;
+const catErr=er=>er.status===400?'Reglas no válidas (detalle: '+er.message+')':er.status===500?'El servidor no pudo guardar las reglas de categoría (detalle: '+er.message+')':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar (detalle: '+er.message+')';
 function catSearchRows(names){return names.map(n=>{const k=!n.category||n.category==='unknown';return `<tr><td>${esc(n.name)}</td><td>${k?'<span class="mut">sin categoría / desconocida</span>':esc(n.category)}</td><td class="n">${esc(n.emails)}</td></tr>`}).join('')}
 function nav(){$('#nav').innerHTML=Object.entries(TABS).map(([k,v])=>`<button class="${k===tab?'on':''}" data-t="${k}">${v}</button>`).join('');
   $('#nav').onclick=e=>{if(e.target.dataset.t){tab=e.target.dataset.t;render()}}}
@@ -95,17 +98,26 @@ async function renderRanking(){
   $('tbody').onclick=async e=>{const tr=e.target.closest('tr.row');if(tr){open=open===tr.dataset.id?null:tr.dataset.id;renderRanking();return}
     const b=e.target.closest('button[data-act]');if(!b)return;const id=b.dataset.id;
     if(b.dataset.act==='avail'){if(availBusy.has(id))return;availBusy.add(id);b.disabled=true;
-      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{availability:b.dataset.to}});availBusy.delete(id);toast(b.dataset.to==='gone'?'Marcado como ya no disponible':'Marca deshecha');await renderRanking()}
-      catch(err){availBusy.delete(id);b.disabled=false;toast(availError(err),1)}return}
+      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{availability:b.dataset.to}})}
+      catch(err){availBusy.delete(id);b.disabled=false;toast(availError(err),1);return}
+      availBusy.delete(id);toast(b.dataset.to==='gone'?'Marcado como ya no disponible':'Marca deshecha');
+      try{await renderRanking()}catch(err){b.disabled=false;toast(renderWarn(err),1)}
+      return}
     if(b.dataset.act==='nb'){if(nbBusy.has(id))return;nbBusy.add(id);
       document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=true);
-      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{new_build:JSON.parse(b.dataset.to)}});nbBusy.delete(id);toast('Obra nueva actualizada');await renderRanking()}
-      catch(err){nbBusy.delete(id);document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=false);toast(nbError(err),1)}return}
-    if(b.dataset.act==='merge'){const into=b.dataset.into;if(!confirm('¿Fusionar este anuncio con '+into+'? Se tratarán como el mismo inmueble.'))return;
-      try{await api('/listings/'+encodeURIComponent(id)+'/merge',{method:'POST',body:{into}});toast('Anuncios fusionados');renderRanking()}
-      catch(err){toast(err.status===404?'No se encontró uno de los anuncios (puede haberse eliminado).':err.status===409?'No se puede fusionar: crearía un ciclo de fusiones.':err.status===400?'Petición de fusión no válida.':'No se pudo fusionar: '+err.message,1)}return}
+      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{new_build:JSON.parse(b.dataset.to)}})}
+      catch(err){nbBusy.delete(id);document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=false);toast(nbError(err),1);return}
+      nbBusy.delete(id);toast('Obra nueva actualizada');
+      try{await renderRanking()}catch(err){document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=false);toast(renderWarn(err),1)}
+      return}
+    if(b.dataset.act==='merge'){const into=b.dataset.into;if(mergeBusy.has(id))return;if(!confirm('¿Fusionar este anuncio con '+into+'? Se tratarán como el mismo inmueble.'))return;
+      mergeBusy.add(id);b.disabled=true;
+      try{await api('/listings/'+encodeURIComponent(id)+'/merge',{method:'POST',body:{into}});mergeBusy.delete(id);toast('Anuncios fusionados');b.disabled=false;try{await renderRanking()}catch(err){toast(renderWarn(err),1)}}
+      catch(err){mergeBusy.delete(id);b.disabled=false;toast(err.status===404?'No se encontró uno de los anuncios (puede haberse eliminado).':err.status===409?'No se puede fusionar: crearía un ciclo de fusiones.':err.status===400?'Petición de fusión no válida.':'No se pudo fusionar (detalle: '+err.message+')',1)}return}
     try{if(b.dataset.act==='amen'){b.textContent='Consultando OSM…';await api('/listings/'+encodeURIComponent(id)+'/amenities',{method:'POST'})}
-      else await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{status:b.dataset.act}});renderRanking()}catch(err){toast(err.message,1);b.textContent='Reintentar'}}}
+      else await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{status:b.dataset.act}})}
+    catch(err){toast(errTxt('No se pudo completar la acción',err),1);b.textContent='Reintentar';return}
+    try{await renderRanking()}catch(err){toast(renderWarn(err),1)}}}
 function priceHist(H,l){if(!H.length)return '<span class="mut">sin historial de precios</span>';
   const rows=H.map(r=>`<span class="mut">${r.origin==='alert_previous'?'antes del '+fmtDate(r.day):fmtDate(r.day)}</span><span>${eur(r.price)}</span>`).join('');
   return `<div class="kv">${rows}<span class="mut"><b>Actual</b></span><span><b>${eur(l.price)}</b></span></div>`}
@@ -134,7 +146,8 @@ async function renderZones(){
     ${keys.map(k=>`<td><input data-k="${k}" size="7" value="${z.indicators[k]??''}"></td>`).join('')}<td class="mut">${z.indicators.rent_m2_flat?z.indicators.rent_m2_flat.toFixed(1):'—'} / ${z.indicators.rent_m2_house?z.indicators.rent_m2_house.toFixed(1):'—'}</td><td><button class="b">Guardar</button></td></tr>`}
   h+='</tbody></table></div>';$('#main').innerHTML=h;$('#stat').textContent=`${Z.length} zonas`;
   $('tbody').onclick=async e=>{const b=e.target.closest('button');if(!b)return;const tr=b.closest('tr');const body={};tr.querySelectorAll('input').forEach(i=>body[i.dataset.k]=i.value.trim()===''?null:parseFloat(i.value.replace(',','.')));
-    try{await api('/zones/'+tr.dataset.z+'/indicators',{method:'PUT',body});toast('Guardado');renderZones()}catch(err){toast(err.message,1)}}}
+    try{await api('/zones/'+tr.dataset.z+'/indicators',{method:'PUT',body})}catch(err){toast(errTxt('No se pudo guardar',err),1);return}
+    toast('Guardado');try{await renderZones()}catch(err){toast(renderWarn(err),1)}}}
 
 async function renderNeeds(){
   needs=await api('/needs');const f=needs.finance,h=needs.home;
@@ -151,13 +164,13 @@ async function renderNeeds(){
   <button class="b p" id="save">Guardar</button></div>`;
   $('#save').onclick=async()=>{document.querySelectorAll('[data-p]').forEach(i=>{const p=i.dataset.p,k=i.dataset.k;let v=i.value;
       if(i.dataset.bool)v=v==='true';else if(i.dataset.list)v=v.split(',').map(s=>s.trim()).filter(Boolean);else v=v===''?null:parseFloat(v);needs[p][k]=v});
-    try{await api('/needs',{method:'PUT',body:needs});toast('Necesidades guardadas')}catch(err){toast(err.message,1)}}}
+    try{await api('/needs',{method:'PUT',body:needs});toast('Necesidades guardadas')}catch(err){toast(errTxt('No se pudo guardar',err),1)}}}
 
 function renderMortgage(){
   $('#main').innerHTML=`<div class="card"><div class="grid"><label>Precio (€)<input id="p" type="number" value="450000"></label><label>Ahorros (€)<input id="s" type="number" value="120000"></label><label>Plazo (años)<input id="y" type="number" value="30"></label><label>TIN %<input id="t" type="number" step="0.01" value="3"></label><label>Ingresos netos/mes<input id="i" type="number"></label><label>Obra nueva<select id="n"><option value="false">No</option><option value="true">Sí</option></select></label></div>
   <p><button class="b p" id="go">Calcular</button></p><div id="out"></div></div><p class="mut">Estimación propia (amortización francesa, impuestos y gastos de config/needs.yaml). No sustituye la simulación del banco ni la calculadora del Notariado.</p>`;
   $('#go').onclick=async()=>{const q=new URLSearchParams({price:$('#p').value,savings:$('#s').value,years:$('#y').value,tin:$('#t').value,new_build:$('#n').value});if($('#i').value)q.set('income',$('#i').value);
-    try{const m=await api('/mortgage?'+q);$('#out').innerHTML=`<div class="kv"><span class="mut">Impuestos</span><span>${eur(m.taxes)}</span><span class="mut">Otros gastos</span><span>${eur(m.other_costs)}</span><span class="mut">Préstamo</span><span>${eur(m.loan)} (LTV ${pct(m.ltv)})</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span><span class="mut">Ahorro mínimo para entrar</span><span>${eur(m.min_savings_needed)} ${m.savings_shortfall>0?`<span class="bad">(faltan ${eur(m.savings_shortfall)})</span>`:''}</span>${m.effort_ratio!=null?`<span class="mut">Esfuerzo</span><span>${pct(m.effort_ratio,1)}</span>`:''}${m.stress.map(s=>`<span class="mut">Con TIN ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio,1)+')':''}</span>`).join('')}</div>`}catch(err){toast(err.message,1)}}}
+    try{const m=await api('/mortgage?'+q);$('#out').innerHTML=`<div class="kv"><span class="mut">Impuestos</span><span>${eur(m.taxes)}</span><span class="mut">Otros gastos</span><span>${eur(m.other_costs)}</span><span class="mut">Préstamo</span><span>${eur(m.loan)} (LTV ${pct(m.ltv)})</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span><span class="mut">Ahorro mínimo para entrar</span><span>${eur(m.min_savings_needed)} ${m.savings_shortfall>0?`<span class="bad">(faltan ${eur(m.savings_shortfall)})</span>`:''}</span>${m.effort_ratio!=null?`<span class="mut">Esfuerzo</span><span>${pct(m.effort_ratio,1)}</span>`:''}${m.stress.map(s=>`<span class="mut">Con TIN ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio,1)+')':''}</span>`).join('')}</div>`}catch(err){toast(errTxt('No se pudo calcular',err),1)}}}
 
 const plural=(n,one,many)=>`${n} ${n===1?one:many}`;
 const readB64=f=>new Promise((ok,ko)=>{const r=new FileReader();r.onload=()=>ok(String(r.result).slice(String(r.result).indexOf(',')+1));r.onerror=()=>ko(new Error('No se pudo leer el archivo '+f.name));r.readAsDataURL(f)});
@@ -172,7 +185,7 @@ async function importAlerts(){
   try{const files=[];for(const f of fs)files.push({name:f.name,content_base64:await readB64(f)});
     const s=await api('/alerts/import',{method:'POST',body:{files}});
     o.innerHTML=importLines(s);$('#af').value='';
-  }catch(e){o.innerHTML=`<span class="bad">No se pudo importar: ${esc(e instanceof TypeError?'sin conexión con el servidor local':e.message)}</span>`}
+  }catch(e){o.innerHTML=`<span class="bad">${esc(errTxt('No se pudo importar',e))}</span>`}
   finally{b.disabled=false}}
 
 let catRules=[],catSaving=false;
@@ -184,14 +197,18 @@ function drawCat(names){const el=$('#cat');if(!el)return;
 let catNames=[];
 async function loadCat(){const el=$('#cat');if(!el)return;
   try{const c=await api('/categories');catRules=c.rules.map(r=>({contains:r.contains,category:r.category}));catNames=c.search_names;drawCat(catNames)}
-  catch(er){if($('#cat'))$('#cat').innerHTML=`<h3 style="margin-top:0">Categorías de alerta</h3><span class="bad">No se pudieron cargar las categorías: ${esc(er instanceof TypeError?'sin conexión con el servidor local':er.message)}</span>`}}
+  catch(er){if($('#cat'))$('#cat').innerHTML=`<h3 style="margin-top:0">Categorías de alerta</h3><span class="bad">${esc(errTxt('No se pudieron cargar las categorías',er))}</span>`}}
 async function catClick(e){const b=e.target.closest('button[data-ca]');if(!b||catSaving)return;const a=b.dataset.ca;
   if(a==='add'){catRules.push({contains:'',category:''});drawCat(catNames);return}
   if(a==='del'){catRules.splice(+b.closest('tr').dataset.i,1);drawCat(catNames);return}
   if(a==='save'){const msg=$('#catmsg'),pr=rulesProblem(catRules);if(pr){msg.innerHTML=`<span class="warn">${esc(pr)}</span>`;return}
     catSaving=true;b.disabled=true;msg.innerHTML='<span class="mut">Guardando…</span>';
-    try{await api('/categories',{method:'PUT',body:{rules:cleanRules(catRules)}});catSaving=false;toast('Reglas guardadas; categorías recalculadas');await loadCat()}
-    catch(er){catSaving=false;b.disabled=false;msg.innerHTML=`<span class="bad">${esc(catErr(er))}</span>`}}}
+    const sent=JSON.stringify(cleanRules(catRules));
+    try{await api('/categories',{method:'PUT',body:{rules:JSON.parse(sent)}});catSaving=false;toast('Reglas guardadas; categorías recalculadas');
+      if(JSON.stringify(cleanRules(catRules))===sent)await loadCat();
+      else{const m=$('#catmsg');if(m)m.innerHTML='<span class="warn">Reglas guardadas, pero hay cambios nuevos sin guardar.</span>'}}
+    catch(er){catSaving=false;const m=$('#catmsg');if(m)m.innerHTML=`<span class="bad">${esc(catErr(er))}</span>`}
+    finally{catSaving=false;b.disabled=false;const sb=$('#cat button[data-ca="save"]');if(sb)sb.disabled=false}}}
 function renderData(){
   $('#main').innerHTML=`<div class="card" id="cat"><span class="mut">Cargando categorías…</span></div>
   <div class="card"><h3 style="margin-top:0">Importar emails de alerta</h3><p class="mut">Archivos <code>.eml</code> o <code>.mbox</code> guardados de las alertas de Idealista. Se leen en tu navegador y se envían solo a este servidor local.</p><div class="row2"><input type="file" id="af" accept=".eml,.mbox" multiple><button class="b p" id="ab">Importar emails</button></div><div id="ao" style="margin-top:10px"></div></div>
@@ -199,7 +216,7 @@ function renderData(){
   <div class="card"><h3 style="margin-top:0">Anuncios (CSV)</h3><p class="mut">Columnas: url,title,property_type,price,area_m2,bedrooms,bathrooms,plot_m2,garden,new_build,lat,lon,municipality,district,neighborhood</p><textarea id="lc" placeholder="pega aquí el CSV"></textarea><p><button class="b p" id="lb">Importar anuncios</button></p></div>
   <div class="card"><h3 style="margin-top:0">Añadir un anuncio a mano</h3><div class="grid">${['url','title','price','area_m2','bedrooms','plot_m2','lat','lon','municipality','district'].map(k=>`<label>${k}<input data-m="${k}"></label>`).join('')}<label>property_type<select data-m="property_type"><option>chalet</option><option>adosado</option><option>pareado</option><option>bajo</option><option>piso</option><option>atico</option></select></label><label>garden<select data-m="garden"><option value="">?</option><option value="1">sí</option><option value="0">no</option></select></label></div><p><button class="b p" id="mb">Añadir</button></p></div>
   <div class="card"><h3 style="margin-top:0">Indicadores (CSV)</h3><p class="mut">Columnas: zone,key,value[,source,year]. Ejemplo: <code>madrid/chamberi,notary_price_m2_flat,6120,Notariado,2026</code></p><textarea id="ic"></textarea><p><button class="b p" id="ib2">Importar indicadores</button></p></div>`;
-  const go=(id,fn)=>$(id).onclick=async()=>{try{toast(await fn())}catch(e){toast(e.message,1)}};
+  const go=(id,fn)=>$(id).onclick=async()=>{try{toast(await fn())}catch(e){toast(errTxt('No se pudo importar',e),1)}};
   $('#ab').onclick=importAlerts;
   $('#cat').onclick=catClick;
   $('#cat').oninput=e=>{const i=e.target.closest('input[data-f]');if(i)catRules[+i.closest('tr').dataset.i][i.dataset.f]=i.value};
