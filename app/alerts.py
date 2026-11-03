@@ -127,6 +127,11 @@ def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = No
                 out = Outcome(email_id, "failed", REASON_NO_DATE)
             else:
                 out = Outcome(email_id, "imported", notices=list(result.notices))
+        if rules is None:  # caller did not load rules: a malformed file must not lose the email
+            try:
+                rules = categories.load_rules()
+            except ValueError:
+                rules = []
         category, rules_matched = categories.categorise(categories.email_text(row.get("search_name"), subject),
                                                        rules)
         row.update(outcome=out.outcome, reason=out.reason, category=category,
