@@ -133,7 +133,7 @@ table and history; Torrejón (112842548) shows 645.000 €, history "670.000 bef
 - [x] T066 [P] [US2] Add `tests/test_availability.py`: `PATCH /api/listings/{id}` with `availability: "gone"` → listing still returned by `GET /api/listings` with flag `ya no disponible` and `availability_changed_at` set; `availability: "active"` undoes it; importing fixtures in which the listing is absent never changes `availability` (FR-019); a new sighting dated after the mark keeps `gone` and adds flag `vuelto a ver en una alerta el <fecha>` (spec edge case "Relisted"); invalid value → 400
 - [x] T067 [US2] In `app/main.py`, extend `PATCH /api/listings/{id}` to accept `availability: "active" | "gone"` (400 otherwise) and set `availability_changed_at` to today; in `app/scoring.py`, add the `ya no disponible` flag and sort `gone` listings after active ones without excluding them (depends on T066)
 - [x] T068 [US2] In `app/derive.py`, never write `availability`; add the relisted flag to `alert_flags` when a sighting's `seen_at` is later than `availability_changed_at` of a `gone` listing (data-model § Extended: listings)
-- [ ] T069 [US2] In `app/static/index.html`, add "Marcar como ya no disponible" / "Deshacer" in the listing detail, grey out `gone` rows, and show the relisted flag
+- [x] T069 [US2] In `app/static/index.html`, add "Marcar como ya no disponible" / "Deshacer" in the listing detail, grey out `gone` rows, and show the relisted flag
 
 **Checkpoint**: quickstart §4 dates/sorting items pass; re-imports never duplicate.
 
