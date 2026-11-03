@@ -14,7 +14,7 @@ nav button.on{color:var(--ink);border-color:var(--acc)}main{max-width:1200px;mar
 table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
 th,td{padding:7px 9px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}th{font-weight:600;color:var(--mut);font-size:12px}th.sort{cursor:pointer;user-select:none}
 td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}tr.row{cursor:pointer}tr.row:hover td{background:color-mix(in srgb,var(--acc) 6%,transparent)}
-tr.ex td{opacity:.5}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:12px 0}
+tr.ex td{opacity:.5}tr.gone td{color:var(--mut)}tr.gone .bar,tr.gone .pill{opacity:.55}tr.gone td .warn{color:var(--warn)}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:12px 0}
 .bar{display:inline-block;width:60px;height:8px;background:var(--line);border-radius:4px;vertical-align:middle;margin-right:6px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
 .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;border:1px solid var(--line);color:var(--mut)}.warn{color:var(--warn)}.bad{color:var(--bad)}.good{color:var(--good)}.mut{color:var(--mut)}
 input,select,textarea,button.b{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
@@ -48,6 +48,11 @@ function sortRows(L){if(!sortKey)return L;return L.map((l,i)=>[l,i]).sort((a,b)=
   if(x===null&&y===null)return a[1]-b[1];if(x===null)return 1;if(y===null)return -1;return x===y?a[1]-b[1]:(x<y?-sortDir:sortDir)}).map(p=>p[0])}
 const arrow=k=>sortKey===k?(sortDir>0?' ▲':' ▼'):'';
 const DUP=/^posible duplicado de (.+)$/;
+const GONE_FLAG='ya no disponible',RELISTED=/^vuelto a ver en una alerta el /;
+const isGone=l=>!!l&&l.availability==='gone';
+const relistedFlag=l=>((l&&l.eval&&l.eval.flags)||[]).find(f=>RELISTED.test(f))||null;
+const availBusy=new Set();
+const availError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de disponibilidad no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo cambiar la disponibilidad: '+er.message;
 function nav(){$('#nav').innerHTML=Object.entries(TABS).map(([k,v])=>`<button class="${k===tab?'on':''}" data-t="${k}">${v}</button>`).join('');
   $('#nav').onclick=e=>{if(e.target.dataset.t){tab=e.target.dataset.t;render()}}}
 const bar=v=>v==null?'<span class="mut">—</span>':`<span class="bar"><i style="width:${Math.round(v*100)}%"></i></span>${Math.round(v*100)}`;
@@ -61,10 +66,10 @@ async function renderRanking(){
   if(!L.length)h+=`<div class="card">Aún no hay anuncios. Ve a <b>Datos</b> para importar un CSV, añadir uno a mano o lanzar la búsqueda de Idealista.</div>`;
   h+=`<div class="scroll"><table><thead><tr><th class="sort" data-s="" title="Orden por score">Score${sortKey?'':' ▼'}</th><th>Zona</th><th>Tipo</th><th class="n">Precio</th><th class="n">m²</th><th class="n">€/m²</th><th class="n">vs ref.</th><th class="n">Hab</th><th class="n">Esfuerzo</th><th>Estado</th><th class="sort" data-s="published_at">Publicado${arrow('published_at')}</th><th class="sort" data-s="price_updated_at">Actualizado${arrow('price_updated_at')}</th></tr></thead><tbody>`;
   for(const l of vis){const e=l.eval,m=e.mortgage;
-    h+=`<tr class="row ${e.excluded.length?'ex':''}" data-id="${esc(l.id)}"><td>${e.score==null?'<span class="mut">—</span>':bar(e.score/100)}${e.coverage<.6?' <span class="warn" title="Poca cobertura de datos">⚠</span>':''}</td>
+    h+=`<tr class="row ${e.excluded.length?'ex':''}${isGone(l)?' gone':''}" data-id="${esc(l.id)}"><td>${e.score==null?'<span class="mut">—</span>':bar(e.score/100)}${e.coverage<.6?' <span class="warn" title="Poca cobertura de datos">⚠</span>':''}</td>
     <td>${esc(l.zone_id)}</td><td>${esc(l.property_type)}</td><td class="n">${eur(l.price)}</td><td class="n">${l.area_m2??'—'}</td><td class="n">${eur(e.price_m2)}</td>
     <td class="n ${e.discount_vs_benchmark>0?'good':e.discount_vs_benchmark<0?'bad':''}">${e.discount_vs_benchmark==null?'—':(e.discount_vs_benchmark>0?'−':'+')+pct(Math.abs(e.discount_vs_benchmark))}</td>
-    <td class="n">${l.bedrooms??'—'}</td><td class="n ${m&&m.effort_ratio>needs.finance.max_effort?'bad':''}">${m?pct(m.effort_ratio):'—'}</td><td><span class="pill">${esc(l.status)}</span></td><td>${fmtDate(l.published_at)}</td><td>${fmtDate(l.price_updated_at)}</td></tr>`;
+    <td class="n">${l.bedrooms??'—'}</td><td class="n ${m&&m.effort_ratio>needs.finance.max_effort?'bad':''}">${m?pct(m.effort_ratio):'—'}</td><td><span class="pill">${esc(l.status)}</span>${isGone(l)?` <span class="pill">${GONE_FLAG}</span>`:''}${relistedFlag(l)?` <span class="warn">${esc(relistedFlag(l))}</span>`:''}</td><td>${fmtDate(l.published_at)}</td><td>${fmtDate(l.price_updated_at)}</td></tr>`;
     if(open===l.id)h+=`<tr class="det"><td colspan="12">${detail(l)}</td></tr>`}
   h+='</tbody></table></div>';$('#main').innerHTML=h;
   $('thead').onclick=e=>{const th=e.target.closest('th[data-s]');if(!th)return;const k=th.dataset.s;
@@ -73,6 +78,9 @@ async function renderRanking(){
   $('#ex').onchange=e=>{showEx=e.target.checked;renderRanking()};
   $('tbody').onclick=async e=>{const tr=e.target.closest('tr.row');if(tr){open=open===tr.dataset.id?null:tr.dataset.id;renderRanking();return}
     const b=e.target.closest('button[data-act]');if(!b)return;const id=b.dataset.id;
+    if(b.dataset.act==='avail'){if(availBusy.has(id))return;availBusy.add(id);b.disabled=true;
+      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{availability:b.dataset.to}});availBusy.delete(id);toast(b.dataset.to==='gone'?'Marcado como ya no disponible':'Marca deshecha');await renderRanking()}
+      catch(err){availBusy.delete(id);b.disabled=false;toast(availError(err),1)}return}
     if(b.dataset.act==='merge'){const into=b.dataset.into;if(!confirm('¿Fusionar este anuncio con '+into+'? Se tratarán como el mismo inmueble.'))return;
       try{await api('/listings/'+encodeURIComponent(id)+'/merge',{method:'POST',body:{into}});toast('Anuncios fusionados');renderRanking()}
       catch(err){toast(err.status===404?'No se encontró uno de los anuncios (puede haberse eliminado).':err.status===409?'No se puede fusionar: crearía un ciclo de fusiones.':err.status===400?'Petición de fusión no válida.':'No se pudo fusionar: '+err.message,1)}return}
@@ -94,7 +102,7 @@ function detail(l){const e=l.eval,m=e.mortgage;
   const a=Object.entries(e.amenities);h+=`<div><h3>Servicios cercanos (OSM)</h3>${a.length?`<div class="kv">${a.map(([k,v])=>`<span class="mut">${esc(k)}</span><span>${v.nearest_m} m</span>`).join('')}</div>`:'<span class="mut">sin calcular</span>'}</div></div>`;
   if(e.excluded.length)h+=`<h3>No cumple tus filtros</h3><ul class="fl bad">${e.excluded.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
   if(e.flags.length)h+=`<h3>Avisos</h3><ul class="fl warn">${e.flags.map(x=>{const d=DUP.exec(x);return `<li>${esc(x)}${d?` <button class="b" data-act="merge" data-id="${esc(l.id)}" data-into="${esc(d[1])}">Fusionar con…</button>`:''}</li>`}).join('')}</ul>`;
-  h+=`<div class="row2" style="margin-top:8px"><button class="b p" data-act="shortlist" data-id="${esc(l.id)}">★ Preseleccionar</button><button class="b" data-act="discarded" data-id="${esc(l.id)}">Descartar</button><button class="b" data-act="amen" data-id="${esc(l.id)}" ${l.lat==null?'disabled title="sin coordenadas"':''}>Calcular servicios (OSM)</button></div>`;return h}
+  h+=`<div class="row2" style="margin-top:8px"><button class="b p" data-act="shortlist" data-id="${esc(l.id)}">★ Preseleccionar</button><button class="b" data-act="discarded" data-id="${esc(l.id)}">Descartar</button>${isGone(l)?`<button class="b" data-act="avail" data-to="active" data-id="${esc(l.id)}">Deshacer</button>`:`<button class="b" data-act="avail" data-to="gone" data-id="${esc(l.id)}">Marcar como ya no disponible</button>`}<button class="b" data-act="amen" data-id="${esc(l.id)}" ${l.lat==null?'disabled title="sin coordenadas"':''}>Calcular servicios (OSM)</button></div>`;return h}
 
 async function renderZones(){
   const Z=await api('/zones');const keys=['notary_price_m2_flat','notary_price_m2_house','income_hh','pct_65plus','no2','crime_rate'];
