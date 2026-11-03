@@ -8,7 +8,9 @@ geography.allow_zones set it is flagged, not excluded (we cannot tell that it is
 
 Hand calculation (source: the median definition, middle value of the sorted list, applied to the
 price / area figures below; not output of the code under test). All six are type chalet (house group),
-area 120 m2, min_listings_for_median set to 3 in the test:
+area 120 m2, 4 bedrooms, min_listings_for_median set to 3 in the test.
+Against needs.example.yaml no other hard filter excludes them: chalet is an allowed type, 120 >= min_area_m2 90,
+4 >= min_bedrooms 4, require_garden false, min_plot_m2 and max_price null:
 
   zone-a   : 360000 / 120 = 3000 ; 420000 / 120 = 3500 ; 480000 / 120 = 4000  -> median 3500 EUR/m2 (n=3)
   zone NULL: 240000 / 120 = 2000 ; 264000 / 120 = 2200 ; 300000 / 120 = 2500  -> would-be median 2200 (n=3)
@@ -24,6 +26,7 @@ from app import scoring
 
 ZONE = "zona-a"
 AREA = 120.0
+BEDROOMS = 4  # meets home.min_bedrooms (4) in needs.example.yaml, so zones are the only filter under test
 ROWS = [  # id, zone, price, location_text
     ("A1", ZONE, 360_000.0, "Zona A centro"),
     ("A2", ZONE, 420_000.0, "Zona A norte"),
@@ -41,7 +44,7 @@ def _load(conn):
         conn.execute(
             "INSERT INTO listings(id,source,url,property_type,price,area_m2,bedrooms,zone_id,location_text)"
             " VALUES(?,?,?,?,?,?,?,?,?)",
-            (lid, "alert", f"https://x.test/{lid}", "chalet", price, AREA, 3, zone, text))
+            (lid, "alert", f"https://x.test/{lid}", "chalet", price, AREA, BEDROOMS, zone, text))
     conn.commit()
 
 
