@@ -27,6 +27,10 @@ STATIC = Path(__file__).parent / "static"
 PROVIDERS_PATH = os.environ.get("CASA_PROVIDERS", str(db.ROOT / "config" / "providers.yaml"))
 
 
+UNIT_MAX = 1e12  # exclusive upper bound for a user-entered price or area (far above any real value)
+SQLITE_INT_MAX = 2**63 - 1  # largest integer SQLite stores
+
+
 def create_app(db_path: str | None = None, needs_path: str | None = None) -> FastAPI:
     app = FastAPI(title="Casa Radar")
     conn = db.connect(db_path)
@@ -170,38 +174,43 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
             raise HTTPException(400, "availability must be active | gone")
         for k in ("price", "area_m2"):  # unit values (FR-034): a positive number; null is not accepted
             if k in body and (isinstance(body[k], bool) or not isinstance(body[k], (int, float))
-                              or not math.isfinite(body[k]) or body[k] <= 0):
-                raise HTTPException(400, f"{k} must be a number greater than 0")
+                              or not math.isfinite(body[k]) or body[k] <= 0
+                              or body[k] >= UNIT_MAX):
+                raise HTTPException(400, f"{k} must be a number greater than 0 and below {UNIT_MAX:g}")
         if "bedrooms" in body and (isinstance(body["bedrooms"], bool) or not isinstance(body["bedrooms"], int)
-                                   or body["bedrooms"] < 0):
+                                   or not 0 <= body["bedrooms"] <= SQLITE_INT_MAX):
             raise HTTPException(400, "bedrooms must be a whole number, 0 or more")
-        for k in ("status", "notes"):
-            if k in body:
-                conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
-        units = [k for k in ("price", "area_m2", "bedrooms") if k in body]
-        if units:  # the user's value, protected from later alerts (FR-023)
-            sources = json.loads(conn.execute("SELECT field_sources FROM listings WHERE id=?", (lid,)).fetchone()[0] or "{}")
-            for k in units:
-                conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
-                sources[k] = "manual"
-            conn.execute("UPDATE listings SET field_sources=? WHERE id=?", (json.dumps(sources, sort_keys=True), lid))
-            derive.derive_listing(conn, lid)
-        if "availability" in body:  # only the user changes availability (FR-019); the date records each change
-            conn.execute("UPDATE listings SET availability=?, availability_changed_at=? WHERE id=?",
-                         (body["availability"], db.today(), lid))
-            derive.derive_listing(conn, lid)  # refresh the relisted flag against the new mark
-        if "new_build" in body:  # FR-033: a user value (origin 'user'); null clears it and the derivation decides again
-            v = body["new_build"]
-            sources = json.loads(conn.execute("SELECT field_sources FROM listings WHERE id=?", (lid,)).fetchone()[0] or "{}")
-            if v is None:
-                sources.pop("new_build", None)  # drop the user label; derive re-labels what it re-derives
-            else:
-                sources["new_build"] = "manual"  # same convention as price/area/bedrooms (derive.USER_ORIGINS)
-            conn.execute("UPDATE listings SET new_build=?, new_build_origin=?, field_sources=? WHERE id=?",
-                         (None, None, json.dumps(sources, sort_keys=True), lid) if v is None
-                         else (int(v), "user", json.dumps(sources, sort_keys=True), lid))
-            derive.derive_listing(conn, lid)
-        conn.commit()
+        try:  # all-or-nothing: any failure leaves no partial write on the shared connection
+            for k in ("status", "notes"):
+                if k in body:
+                    conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
+            units = [k for k in ("price", "area_m2", "bedrooms") if k in body]
+            if units:  # the user's value, protected from later alerts (FR-023)
+                sources = json.loads(conn.execute("SELECT field_sources FROM listings WHERE id=?", (lid,)).fetchone()[0] or "{}")
+                for k in units:
+                    conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
+                    sources[k] = "manual"
+                conn.execute("UPDATE listings SET field_sources=? WHERE id=?", (json.dumps(sources, sort_keys=True), lid))
+                derive.derive_listing(conn, lid)
+            if "availability" in body:  # only the user changes availability (FR-019); the date records each change
+                conn.execute("UPDATE listings SET availability=?, availability_changed_at=? WHERE id=?",
+                             (body["availability"], db.today(), lid))
+                derive.derive_listing(conn, lid)  # refresh the relisted flag against the new mark
+            if "new_build" in body:  # FR-033: a user value (origin 'user'); null clears it and the derivation decides again
+                v = body["new_build"]
+                sources = json.loads(conn.execute("SELECT field_sources FROM listings WHERE id=?", (lid,)).fetchone()[0] or "{}")
+                if v is None:
+                    sources.pop("new_build", None)  # drop the user label; derive re-labels what it re-derives
+                else:
+                    sources["new_build"] = "manual"  # same convention as price/area/bedrooms (derive.USER_ORIGINS)
+                conn.execute("UPDATE listings SET new_build=?, new_build_origin=?, field_sources=? WHERE id=?",
+                             (None, None, json.dumps(sources, sort_keys=True), lid) if v is None
+                             else (int(v), "user", json.dumps(sources, sort_keys=True), lid))
+                derive.derive_listing(conn, lid)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         return {"ok": True}
 
     @app.post("/api/listings/{lid:path}/amenities")
