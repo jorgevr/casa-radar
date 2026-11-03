@@ -25,3 +25,8 @@ Files: `app/categories.py`, `app/alerts.py` (tests untouched).
 ## Known limitation
 - The mailbox sync path (`process_message` without `rules`) still raises on a malformed rules file, aborting that
   sync. Only `import_paths` degrades to 'unknown' + `import_runs.error`.
+
+## Review 1 fix (F1)
+- `load_rules`: `where` is the file name only; the YAML is parsed from the read text (`yaml.load(f.read(), ...)`), so
+  PyYAML marks say `<unicode string>` instead of the absolute path. Line/column are kept. All messages (YAML, UTF-8,
+  bad entry, repeated key, OSError) and `import_runs.error` now carry the file name only.

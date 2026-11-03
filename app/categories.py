@@ -45,10 +45,10 @@ def load_rules() -> list[dict]:
     no rules. Anything else malformed raises one ValueError naming the file (and the entry), never a silent drop."""
     if not CATEGORIES_PATH.exists():
         return []
-    where = str(CATEGORIES_PATH)
+    where = CATEGORIES_PATH.name  # file name only: the full local path stays out of messages
     try:
         with open(CATEGORIES_PATH, encoding="utf-8") as f:
-            data = yaml.load(f, Loader=_UniqueKeyLoader)
+            data = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # string source: marks omit the path
     except UnicodeDecodeError as exc:
         raise ValueError(f"{where}: the file is not valid UTF-8 ({exc.reason} at byte {exc.start})") from exc
     except yaml.YAMLError as exc:
