@@ -1,32 +1,27 @@
-# FU1 review 1
+# FU1 review 2
 
-Commit reviewed: 7d2a5ee (diff base jorgevr/spec-kit-3-feature).
+Commit reviewed: d68c97b (diff base jorgevr/spec-kit-3-feature). Round 1 report kept as reviews/FU1-r1.md.
 
 ## Gates
 - compileall: pass
-- pytest -q -m "not slow": 337 passed, 1 deselected (207 s)
+- pytest -q -m "not slow": 341 passed, 1 deselected (150 s)
 - anonymise check: pass
-- forbidden-path diff: only app/alerts.py, app/categories.py, 2 handoffs, tests/test_categories_hardening.py
+- forbidden-path diff: only app/alerts.py, app/categories.py, FU1 handoffs/reviews, tests/test_categories_hardening.py
 - requirements.txt diff: empty
 
-## Checked and fine
-- validate_rules: extra keys rejected (sorted, 1-based entry); `contains` empty after slug rejected; category stripped in validate, load and save.
-- Duplicate YAML keys inside one rule rejected by _UniqueKeyLoader (message: file name, rule index, key); identical separate rules still load. Verified by hand for a 2-`category:` rule.
-- OSError on read -> "alert_categories.yaml: cannot read the file (PermissionError)", filename only.
-- import_paths: rules loaded once, ValueError -> rules [] -> every email 'unknown', matched '[]', run finishes status 'ok' with error "ValueError: <msg>". Valid path unchanged (rules passed explicitly, error NULL). `rules=[]` is not confused with None in categorise (`is None` test).
-- main.py GET/PUT /api/categories, cli `categories` and recategorise_all still catch ValueError and use `str(exc)`; behaviour unchanged, only messages differ (new messages for extra keys / empty slug surface as 400 on PUT, as intended).
-- No secrets or email content in the stored error.
+## F1 verification (fixed)
+- load_rules uses `where = CATEGORIES_PATH.name` and `yaml.load(f.read(), Loader=_UniqueKeyLoader)`. PyYAML marks now read `in "<unicode string>", line N, column M`, so the line/column are kept and the path is gone.
+- Probed by hand with a temp directory named `secretuser_*`: invalid YAML (flow and mapping cases), invalid UTF-8, bad entry, repeated key, and python-tag inputs all give ValueError messages with the file name only; none contains the directory. The directory-instead-of-file case (OSError) is covered by the new test and uses the file name plus exception class.
+- import_runs.error is `ValueError: <that message>`, so it is clean too (test `test_import_error_column_has_no_absolute_path`).
+- GET/PUT /api/categories wrap `str(exc)` of those same messages; PUT write failure already reports only the exception class. No path in any error body.
+- Safety: `_UniqueKeyLoader` subclasses `yaml.SafeLoader`; `!!python/object/apply:os.system` and `!!python/name:` tags are rejected ("could not determine a constructor") and nothing is executed. construct_mapping still delegates to SafeLoader. The `_root` attribute is only used for the rule index.
+- New tests assert `str(tmp_path)` and its parent are absent for YAML, UTF-8, entry and import-run messages.
 
-## Findings
+## Regressions
+None found: valid path unchanged, duplicate identical rules still load, UnicodeDecodeError from `f.read()` is still caught inside the try.
 
-### F1 (should fix, cheap): full local path still leaks in YAML and UTF-8 errors
-app/categories.py:48-55. `where = str(CATEGORIES_PATH)` is used for the "invalid YAML" and "not valid UTF-8" messages, and PyYAML also embeds the stream name in its marks (`in "C:\Users\<name>\...\alert_categories.yaml", line 2`). Reproduced with a temp file: the message contains the absolute path twice. With FU1 this string is now written to import_runs.error (alerts.py:215/240) and returned by GET /api/categories as a 500 detail and printed by the CLI. It includes the Windows user profile name, which is PII, and contradicts the "no full local path anywhere in messages" requirement.
-Fix: `where = CATEGORIES_PATH.name`, and call `yaml.load(f.read(), Loader=_UniqueKeyLoader)` (string source, marks say `<unicode string>`) or strip the path from the mark text. Tests assert only the file name, so they will keep passing. Add one assertion that `str(tmp_path)` is absent in the invalid-YAML message.
+## Remaining notes (carried from round 1, not blocking)
+- F2: mailbox sync path (`process_message` without `rules`) still raises on a malformed rules file; record a follow-up to load rules once in the sync loop with the same fallback, before the next phase checkpoint.
+- F3: `contains` is not trimmed; recategorise_all raises on a malformed file (intended for an explicit user action).
 
-### F2 (note, not blocking): sync path limitation
-alerts.process_message called without `rules` (mailbox sync) still raises ValueError on a malformed rules file on every email. Judgement: acceptable for FU1 as scoped (file import is what the task names; sync is user-run and sync.py was out of scope), but record a follow-up: load rules once in the sync loop with the same fallback, otherwise a typo in the rules file aborts a real sync mid-run. The failure is loud, not silent data loss, so not blocking. Do not defer it past the next phase checkpoint.
-
-### F3 (note): `contains` not trimmed; recategorise_all unchanged
-Harmless (slug normalises). recategorise_all still raises on malformed file, which is the right behaviour for an explicit user action.
-
-STATUS: FAIL
+STATUS: PASS
