@@ -32,6 +32,8 @@ button.b{cursor:pointer}button.b.p{background:var(--acc);color:#fff;border-color
 </header>
 <main id="main"></main>
 <script>
+// Must equal, character for character, the flag appended in app/scoring.py (new_build_origin == "category"); keep in sync.
+const NB_FLAG='obra nueva según la categoría de la alerta, confirma';
 const $=(s,r=document)=>r.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const eur=n=>n==null?'—':Math.round(n).toLocaleString('es-ES')+' €';
@@ -52,10 +54,9 @@ const GONE_FLAG='ya no disponible',RELISTED=/^vuelto a ver en una alerta el /;
 const isGone=l=>!!l&&l.availability==='gone';
 const relistedFlag=l=>((l&&l.eval&&l.eval.flags)||[]).find(f=>RELISTED.test(f))||null;
 const availBusy=new Set();
-const availError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de disponibilidad no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo cambiar la disponibilidad: '+er.message;
-const NB_FLAG='obra nueva según la categoría de la alerta, confirma';
-const nbBusy=new Set();
-const nbError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de obra nueva no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar obra nueva: '+er.message;
+const availError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de disponibilidad no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo cambiar la disponibilidad (detalle: '+er.message+')';
+const nbBusy=new Set(),mergeBusy=new Set();
+const nbError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de obra nueva no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar obra nueva (detalle: '+er.message+')';
 const NB_ORIGIN={email:'según el email',category:'según la categoría de la alerta',user:'valor tuyo'};
 function nbBlock(l){const v=l.new_build,o=l.new_build_origin,id=esc(l.id);
   const cur=v==null?'desconocido':(v?'obra nueva':'segunda mano');
@@ -67,7 +68,7 @@ function nbBlock(l){const v=l.new_build,o=l.new_build_origin,id=esc(l.id);
 // rules editor: pure helpers (tested with node)
 function cleanRules(rows){return rows.map(r=>({contains:String(r.contains??'').trim(),category:String(r.category??'').trim()}))}
 function rulesProblem(rows){const c=cleanRules(rows);for(let i=0;i<c.length;i++){if(!c[i].contains)return `La regla ${i+1} no tiene texto «contiene».`;if(!c[i].category)return `La regla ${i+1} no tiene categoría.`}return null}
-const catErr=er=>er.status===400?'Reglas no válidas: '+er.message:er.status===500?'El servidor no pudo guardar las reglas de categoría: '+er.message:er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar: '+er.message;
+const catErr=er=>er.status===400?'Reglas no válidas (detalle: '+er.message+')':er.status===500?'El servidor no pudo guardar las reglas de categoría (detalle: '+er.message+')':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar (detalle: '+er.message+')';
 function catSearchRows(names){return names.map(n=>{const k=!n.category||n.category==='unknown';return `<tr><td>${esc(n.name)}</td><td>${k?'<span class="mut">sin categoría / desconocida</span>':esc(n.category)}</td><td class="n">${esc(n.emails)}</td></tr>`}).join('')}
 function nav(){$('#nav').innerHTML=Object.entries(TABS).map(([k,v])=>`<button class="${k===tab?'on':''}" data-t="${k}">${v}</button>`).join('');
   $('#nav').onclick=e=>{if(e.target.dataset.t){tab=e.target.dataset.t;render()}}}
@@ -99,11 +100,15 @@ async function renderRanking(){
       catch(err){availBusy.delete(id);b.disabled=false;toast(availError(err),1)}return}
     if(b.dataset.act==='nb'){if(nbBusy.has(id))return;nbBusy.add(id);
       document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=true);
-      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{new_build:JSON.parse(b.dataset.to)}});nbBusy.delete(id);toast('Obra nueva actualizada');await renderRanking()}
-      catch(err){nbBusy.delete(id);document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=false);toast(nbError(err),1)}return}
-    if(b.dataset.act==='merge'){const into=b.dataset.into;if(!confirm('¿Fusionar este anuncio con '+into+'? Se tratarán como el mismo inmueble.'))return;
-      try{await api('/listings/'+encodeURIComponent(id)+'/merge',{method:'POST',body:{into}});toast('Anuncios fusionados');renderRanking()}
-      catch(err){toast(err.status===404?'No se encontró uno de los anuncios (puede haberse eliminado).':err.status===409?'No se puede fusionar: crearía un ciclo de fusiones.':err.status===400?'Petición de fusión no válida.':'No se pudo fusionar: '+err.message,1)}return}
+      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{new_build:JSON.parse(b.dataset.to)}})}
+      catch(err){nbBusy.delete(id);document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=false);toast(nbError(err),1);return}
+      nbBusy.delete(id);toast('Obra nueva actualizada');
+      try{await renderRanking()}catch(err){toast('Obra nueva guardada, pero no se pudo actualizar la vista (detalle: '+err.message+'). Recarga la página.',1)}
+      return}
+    if(b.dataset.act==='merge'){const into=b.dataset.into;if(mergeBusy.has(id))return;if(!confirm('¿Fusionar este anuncio con '+into+'? Se tratarán como el mismo inmueble.'))return;
+      mergeBusy.add(id);b.disabled=true;
+      try{await api('/listings/'+encodeURIComponent(id)+'/merge',{method:'POST',body:{into}});mergeBusy.delete(id);toast('Anuncios fusionados');renderRanking()}
+      catch(err){mergeBusy.delete(id);b.disabled=false;toast(err.status===404?'No se encontró uno de los anuncios (puede haberse eliminado).':err.status===409?'No se puede fusionar: crearía un ciclo de fusiones.':err.status===400?'Petición de fusión no válida.':'No se pudo fusionar (detalle: '+err.message+')',1)}return}
     try{if(b.dataset.act==='amen'){b.textContent='Consultando OSM…';await api('/listings/'+encodeURIComponent(id)+'/amenities',{method:'POST'})}
       else await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{status:b.dataset.act}});renderRanking()}catch(err){toast(err.message,1);b.textContent='Reintentar'}}}
 function priceHist(H,l){if(!H.length)return '<span class="mut">sin historial de precios</span>';
@@ -190,8 +195,12 @@ async function catClick(e){const b=e.target.closest('button[data-ca]');if(!b||ca
   if(a==='del'){catRules.splice(+b.closest('tr').dataset.i,1);drawCat(catNames);return}
   if(a==='save'){const msg=$('#catmsg'),pr=rulesProblem(catRules);if(pr){msg.innerHTML=`<span class="warn">${esc(pr)}</span>`;return}
     catSaving=true;b.disabled=true;msg.innerHTML='<span class="mut">Guardando…</span>';
-    try{await api('/categories',{method:'PUT',body:{rules:cleanRules(catRules)}});catSaving=false;toast('Reglas guardadas; categorías recalculadas');await loadCat()}
-    catch(er){catSaving=false;b.disabled=false;msg.innerHTML=`<span class="bad">${esc(catErr(er))}</span>`}}}
+    const sent=JSON.stringify(cleanRules(catRules));
+    try{await api('/categories',{method:'PUT',body:{rules:JSON.parse(sent)}});catSaving=false;toast('Reglas guardadas; categorías recalculadas');
+      if(JSON.stringify(cleanRules(catRules))===sent)await loadCat();
+      else{const m=$('#catmsg');if(m)m.innerHTML='<span class="warn">Reglas guardadas, pero hay cambios nuevos sin guardar.</span>'}}
+    catch(er){catSaving=false;const m=$('#catmsg');if(m)m.innerHTML=`<span class="bad">${esc(catErr(er))}</span>`}
+    finally{catSaving=false;b.disabled=false;const sb=$('#cat button[data-ca="save"]');if(sb)sb.disabled=false}}}
 function renderData(){
   $('#main').innerHTML=`<div class="card" id="cat"><span class="mut">Cargando categorías…</span></div>
   <div class="card"><h3 style="margin-top:0">Importar emails de alerta</h3><p class="mut">Archivos <code>.eml</code> o <code>.mbox</code> guardados de las alertas de Idealista. Se leen en tu navegador y se envían solo a este servidor local.</p><div class="row2"><input type="file" id="af" accept=".eml,.mbox" multiple><button class="b p" id="ab">Importar emails</button></div><div id="ao" style="margin-top:10px"></div></div>
