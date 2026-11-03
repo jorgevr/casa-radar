@@ -141,6 +141,13 @@ def derive_listing(conn, listing_id: str) -> None:
         if value is None:
             sources.pop(col, None)
     values["field_sources"] = json.dumps(sources, sort_keys=True)
+    # Relisted (FR-019): a gone listing seen in an alert on a local day after the day it was marked. Rebuilt on every
+    # derivation from the sightings plus the user's mark, so it never depends on processing order; availability itself
+    # is never written here. A sighting on the same day as the mark is not "later" (it may predate the mark).
+    if existing is not None and existing["availability"] == "gone" and existing["availability_changed_at"]:
+        later = [_day(r["seen_at"]) for r in rows if _day(r["seen_at"]) > existing["availability_changed_at"][:10]]
+        if later:
+            flags.append(f"vuelto a ver en una alerta el {_date(max(later))}")
     values["alert_flags"] = json.dumps(flags, ensure_ascii=False)
     if existing is None:
         cols = ["id", *values]
