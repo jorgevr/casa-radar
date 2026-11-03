@@ -53,6 +53,22 @@ const isGone=l=>!!l&&l.availability==='gone';
 const relistedFlag=l=>((l&&l.eval&&l.eval.flags)||[]).find(f=>RELISTED.test(f))||null;
 const availBusy=new Set();
 const availError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de disponibilidad no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo cambiar la disponibilidad: '+er.message;
+const NB_FLAG='obra nueva según la categoría de la alerta, confirma';
+const nbBusy=new Set();
+const nbError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de obra nueva no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar obra nueva: '+er.message;
+const NB_ORIGIN={email:'según el email',category:'según la categoría de la alerta',user:'valor tuyo'};
+function nbBlock(l){const v=l.new_build,o=l.new_build_origin,id=esc(l.id);
+  const cur=v==null?'desconocido':(v?'obra nueva':'segunda mano');
+  const btn=(to,t,cls)=>`<button class="b ${cls||''}" data-act="nb" data-to="${to}" data-id="${id}">${t}</button>`;
+  let h=`<div><h3>Obra nueva</h3><div class="kv"><span class="mut">Estado</span><span>${cur}${o&&NB_ORIGIN[o]?` <span class="mut">(${NB_ORIGIN[o]})</span>`:''}</span></div>`;
+  if(o==='category')h+=`<p class="warn">${esc(NB_FLAG)}</p><div class="row2">${btn('true','Confirmar obra nueva','p')}${btn('false','Es segunda mano')}</div>`;
+  else h+=`<div class="row2">${btn('true','Marcar obra nueva')}${btn('false','Marcar segunda mano')}${o==='user'?btn('null','Quitar mi valor'):''}</div>`;
+  return h+'</div>'}
+// rules editor: pure helpers (tested with node)
+function cleanRules(rows){return rows.map(r=>({contains:String(r.contains??'').trim(),category:String(r.category??'').trim()}))}
+function rulesProblem(rows){const c=cleanRules(rows);for(let i=0;i<c.length;i++){if(!c[i].contains)return `La regla ${i+1} no tiene texto «contiene».`;if(!c[i].category)return `La regla ${i+1} no tiene categoría.`}return null}
+const catErr=er=>er.status===400?'Reglas no válidas: '+er.message:er.status===500?'El servidor no pudo guardar las reglas de categoría: '+er.message:er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar: '+er.message;
+function catSearchRows(names){return names.map(n=>{const k=!n.category||n.category==='unknown';return `<tr><td>${esc(n.name)}</td><td>${k?'<span class="mut">sin categoría / desconocida</span>':esc(n.category)}</td><td class="n">${esc(n.emails)}</td></tr>`}).join('')}
 function nav(){$('#nav').innerHTML=Object.entries(TABS).map(([k,v])=>`<button class="${k===tab?'on':''}" data-t="${k}">${v}</button>`).join('');
   $('#nav').onclick=e=>{if(e.target.dataset.t){tab=e.target.dataset.t;render()}}}
 const bar=v=>v==null?'<span class="mut">—</span>':`<span class="bar"><i style="width:${Math.round(v*100)}%"></i></span>${Math.round(v*100)}`;
@@ -81,6 +97,10 @@ async function renderRanking(){
     if(b.dataset.act==='avail'){if(availBusy.has(id))return;availBusy.add(id);b.disabled=true;
       try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{availability:b.dataset.to}});availBusy.delete(id);toast(b.dataset.to==='gone'?'Marcado como ya no disponible':'Marca deshecha');await renderRanking()}
       catch(err){availBusy.delete(id);b.disabled=false;toast(availError(err),1)}return}
+    if(b.dataset.act==='nb'){if(nbBusy.has(id))return;nbBusy.add(id);
+      document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=true);
+      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{new_build:JSON.parse(b.dataset.to)}});nbBusy.delete(id);toast('Obra nueva actualizada');await renderRanking()}
+      catch(err){nbBusy.delete(id);document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=false);toast(nbError(err),1)}return}
     if(b.dataset.act==='merge'){const into=b.dataset.into;if(!confirm('¿Fusionar este anuncio con '+into+'? Se tratarán como el mismo inmueble.'))return;
       try{await api('/listings/'+encodeURIComponent(id)+'/merge',{method:'POST',body:{into}});toast('Anuncios fusionados');renderRanking()}
       catch(err){toast(err.status===404?'No se encontró uno de los anuncios (puede haberse eliminado).':err.status===409?'No se puede fusionar: crearía un ciclo de fusiones.':err.status===400?'Petición de fusión no válida.':'No se pudo fusionar: '+err.message,1)}return}
@@ -95,13 +115,15 @@ function detail(l){const e=l.eval,m=e.mortgage;
   <p class="mut">Referencia de precio: ${e.benchmark_m2?eur(e.benchmark_m2)+'/m² ('+esc(e.benchmark_source)+')':'ninguna'} · cobertura de datos ${pct(e.coverage)}</p></div>`;
   if(m)h+=`<div><h3>Hipoteca (estimación)</h3><div class="kv"><span class="mut">Impuestos + gastos</span><span>${eur(m.taxes+m.other_costs)}</span><span class="mut">Préstamo (LTV ${pct(m.ltv)})</span><span>${eur(m.loan)}</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span>
     ${m.stress.map(s=>`<span class="mut">Tipo ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio)+')':''}</span>`).join('')}</div></div>`;
+  h+=nbBlock(l);
   const sg=l.sightings||[];
   h+=`<p class="mut">Fuente: ${sg.length?'Idealista (email de alerta)':l.source==='idealista'?'Idealista':esc(l.source||'desconocido')} · visto por primera vez: ${esc(l.first_seen||'desconocido')} · última vez: ${esc(l.last_seen||'desconocido')}</p>`;
   if(sg.length)h+=`<h3>Emails de alerta</h3><ul class="fl">${sg.map(x=>`<li><span class="mut">${esc(fmtDate(x.alert_date))}</span> ${esc(x.subject||'sin asunto')}</li>`).join('')}</ul>`;
   h+=`<h3>Historial de precios</h3><div id="ph"><span class="mut">Cargando…</span></div>`;
   const a=Object.entries(e.amenities);h+=`<div><h3>Servicios cercanos (OSM)</h3>${a.length?`<div class="kv">${a.map(([k,v])=>`<span class="mut">${esc(k)}</span><span>${v.nearest_m} m</span>`).join('')}</div>`:'<span class="mut">sin calcular</span>'}</div></div>`;
   if(e.excluded.length)h+=`<h3>No cumple tus filtros</h3><ul class="fl bad">${e.excluded.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
-  if(e.flags.length)h+=`<h3>Avisos</h3><ul class="fl warn">${e.flags.map(x=>{const d=DUP.exec(x);return `<li>${esc(x)}${d?` <button class="b" data-act="merge" data-id="${esc(l.id)}" data-into="${esc(d[1])}">Fusionar con…</button>`:''}</li>`}).join('')}</ul>`;
+  const fl=e.flags.filter(x=>x!==NB_FLAG);
+  if(fl.length)h+=`<h3>Avisos</h3><ul class="fl warn">${fl.map(x=>{const d=DUP.exec(x);return `<li>${esc(x)}${d?` <button class="b" data-act="merge" data-id="${esc(l.id)}" data-into="${esc(d[1])}">Fusionar con…</button>`:''}</li>`}).join('')}</ul>`;
   h+=`<div class="row2" style="margin-top:8px"><button class="b p" data-act="shortlist" data-id="${esc(l.id)}">★ Preseleccionar</button><button class="b" data-act="discarded" data-id="${esc(l.id)}">Descartar</button>${isGone(l)?`<button class="b" data-act="avail" data-to="active" data-id="${esc(l.id)}">Deshacer</button>`:`<button class="b" data-act="avail" data-to="gone" data-id="${esc(l.id)}">Marcar como ya no disponible</button>`}<button class="b" data-act="amen" data-id="${esc(l.id)}" ${l.lat==null?'disabled title="sin coordenadas"':''}>Calcular servicios (OSM)</button></div>`;return h}
 
 async function renderZones(){
@@ -153,14 +175,35 @@ async function importAlerts(){
   }catch(e){o.innerHTML=`<span class="bad">No se pudo importar: ${esc(e instanceof TypeError?'sin conexión con el servidor local':e.message)}</span>`}
   finally{b.disabled=false}}
 
+let catRules=[],catSaving=false;
+function drawCat(names){const el=$('#cat');if(!el)return;
+  el.innerHTML=`<h3 style="margin-top:0">Categorías de alerta</h3><p class="mut">Si el nombre de la búsqueda de un email contiene el texto de una regla, el email recibe esa categoría. Una categoría <code>new-build</code> marca el anuncio como obra nueva pendiente de confirmar. Al guardar se recalculan las categorías de todos los emails.</p>
+  <table><thead><tr><th>Contiene</th><th>Categoría</th><th></th></tr></thead><tbody>${catRules.length?catRules.map((r,i)=>`<tr data-i="${i}"><td><input data-f="contains" value="${esc(r.contains)}" style="width:100%"></td><td><input data-f="category" value="${esc(r.category)}"></td><td><button class="b" data-ca="del">Quitar</button></td></tr>`).join(''):'<tr><td colspan="3" class="mut">Sin reglas.</td></tr>'}</tbody></table>
+  <div class="row2" style="margin-top:8px"><button class="b" data-ca="add">Añadir regla</button><button class="b p" data-ca="save" ${catSaving?'disabled':''}>Guardar reglas</button><span id="catmsg"></span></div>
+  <h3>Búsquedas guardadas</h3>${names.length?`<div class="scroll"><table><thead><tr><th>Búsqueda</th><th>Categoría</th><th class="n">Emails</th></tr></thead><tbody>${catSearchRows(names)}</tbody></table></div>`:'<span class="mut">Aún no hay emails con nombre de búsqueda.</span>'}`}
+let catNames=[];
+async function loadCat(){const el=$('#cat');if(!el)return;
+  try{const c=await api('/categories');catRules=c.rules.map(r=>({contains:r.contains,category:r.category}));catNames=c.search_names;drawCat(catNames)}
+  catch(er){if($('#cat'))$('#cat').innerHTML=`<h3 style="margin-top:0">Categorías de alerta</h3><span class="bad">No se pudieron cargar las categorías: ${esc(er instanceof TypeError?'sin conexión con el servidor local':er.message)}</span>`}}
+async function catClick(e){const b=e.target.closest('button[data-ca]');if(!b||catSaving)return;const a=b.dataset.ca;
+  if(a==='add'){catRules.push({contains:'',category:''});drawCat(catNames);return}
+  if(a==='del'){catRules.splice(+b.closest('tr').dataset.i,1);drawCat(catNames);return}
+  if(a==='save'){const msg=$('#catmsg'),pr=rulesProblem(catRules);if(pr){msg.innerHTML=`<span class="warn">${esc(pr)}</span>`;return}
+    catSaving=true;b.disabled=true;msg.innerHTML='<span class="mut">Guardando…</span>';
+    try{await api('/categories',{method:'PUT',body:{rules:cleanRules(catRules)}});catSaving=false;toast('Reglas guardadas; categorías recalculadas');await loadCat()}
+    catch(er){catSaving=false;b.disabled=false;msg.innerHTML=`<span class="bad">${esc(catErr(er))}</span>`}}}
 function renderData(){
-  $('#main').innerHTML=`<div class="card"><h3 style="margin-top:0">Importar emails de alerta</h3><p class="mut">Archivos <code>.eml</code> o <code>.mbox</code> guardados de las alertas de Idealista. Se leen en tu navegador y se envían solo a este servidor local.</p><div class="row2"><input type="file" id="af" accept=".eml,.mbox" multiple><button class="b p" id="ab">Importar emails</button></div><div id="ao" style="margin-top:10px"></div></div>
+  $('#main').innerHTML=`<div class="card" id="cat"><span class="mut">Cargando categorías…</span></div>
+  <div class="card"><h3 style="margin-top:0">Importar emails de alerta</h3><p class="mut">Archivos <code>.eml</code> o <code>.mbox</code> guardados de las alertas de Idealista. Se leen en tu navegador y se envían solo a este servidor local.</p><div class="row2"><input type="file" id="af" accept=".eml,.mbox" multiple><button class="b p" id="ab">Importar emails</button></div><div id="ao" style="margin-top:10px"></div></div>
   <div class="card"><h3 style="margin-top:0">Idealista (vía idealista-mcp)</h3><p class="mut">Requiere config/providers.yaml y tus credenciales de la API de Idealista. Argumentos opcionales como JSON, p. ej. <code>{"center":"40.3458,-3.8249","distance":3000}</code>.</p><div class="row2"><input id="ia" style="flex:1" placeholder="{} (usa los de providers.yaml)"><button class="b p" id="ib">Buscar e importar</button></div></div>
   <div class="card"><h3 style="margin-top:0">Anuncios (CSV)</h3><p class="mut">Columnas: url,title,property_type,price,area_m2,bedrooms,bathrooms,plot_m2,garden,new_build,lat,lon,municipality,district,neighborhood</p><textarea id="lc" placeholder="pega aquí el CSV"></textarea><p><button class="b p" id="lb">Importar anuncios</button></p></div>
   <div class="card"><h3 style="margin-top:0">Añadir un anuncio a mano</h3><div class="grid">${['url','title','price','area_m2','bedrooms','plot_m2','lat','lon','municipality','district'].map(k=>`<label>${k}<input data-m="${k}"></label>`).join('')}<label>property_type<select data-m="property_type"><option>chalet</option><option>adosado</option><option>pareado</option><option>bajo</option><option>piso</option><option>atico</option></select></label><label>garden<select data-m="garden"><option value="">?</option><option value="1">sí</option><option value="0">no</option></select></label></div><p><button class="b p" id="mb">Añadir</button></p></div>
   <div class="card"><h3 style="margin-top:0">Indicadores (CSV)</h3><p class="mut">Columnas: zone,key,value[,source,year]. Ejemplo: <code>madrid/chamberi,notary_price_m2_flat,6120,Notariado,2026</code></p><textarea id="ic"></textarea><p><button class="b p" id="ib2">Importar indicadores</button></p></div>`;
   const go=(id,fn)=>$(id).onclick=async()=>{try{toast(await fn())}catch(e){toast(e.message,1)}};
   $('#ab').onclick=importAlerts;
+  $('#cat').onclick=catClick;
+  $('#cat').oninput=e=>{const i=e.target.closest('input[data-f]');if(i)catRules[+i.closest('tr').dataset.i][i.dataset.f]=i.value};
+  loadCat();
   go('#ib',async()=>{const t=$('#ia').value.trim();const r=await api('/providers/idealista/search',{method:'POST',body:t?JSON.parse(t):{}});return r.imported+' anuncios importados'});
   go('#lb',async()=>{const r=await api('/listings/import-csv',{method:'POST',body:$('#lc').value});return r.imported+' anuncios importados'});
   go('#ib2',async()=>{const r=await api('/indicators/import-csv',{method:'POST',body:$('#ic').value});return r.imported+' indicadores importados'});
