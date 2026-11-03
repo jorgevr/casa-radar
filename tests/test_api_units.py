@@ -119,3 +119,58 @@ def test_export_csv_still_has_scoring_version_guard(client, lid, no_network):
     assert resp.status_code == 200
     header = next(csv.reader(io.StringIO(resp.text)))
     assert "scoring_version" in header
+
+
+# ── overflow and atomicity (review T040 finding 1) ────────────────────────────────────────────────
+# Assumed bounds: integers must fit SQLite's signed 64-bit range (|n| < 2**63); price and area_m2 must
+# also be below 1e12 (a sane cap far above any home price or area); 1e308 and inf-like values are 400.
+@pytest.fixture
+def soft_client(tmp_path):
+    """Like `client`, but a server error comes back as a 500 response instead of raising in the test."""
+    needs = tmp_path / "needs2.yaml"
+    needs.write_text(EXAMPLE_NEEDS.read_text(encoding="utf-8"), encoding="utf-8")
+    with TestClient(create_app(str(tmp_path / "t2.db"), str(needs)), raise_server_exceptions=False) as c:
+        yield c
+
+
+@pytest.fixture
+def slid(soft_client):
+    body = {"files": [{"name": n, "content_base64": base64.b64encode((EMAILS / n).read_bytes()).decode("ascii")}
+                      for n in (DROP_TORREJON, NEW_CHALET)]}
+    assert soft_client.post("/api/alerts/import", json=body).status_code == 200
+    return next(r["id"] for r in soft_client.get("/api/listings").json() if "112842548" in r["id"])
+
+
+OUT_OF_RANGE = [
+    ("price", 2**63), ("price", -(2**63) - 1), ("price", 10**30),
+    ("area_m2", 2**63), ("area_m2", 10**30),
+    ("bedrooms", 2**63), ("bedrooms", 10**30), ("bedrooms", -(2**63) - 1),
+    ("price", 1e308), ("price", 1e12), ("area_m2", 1e308), ("area_m2", 1e12),
+]
+
+
+@pytest.mark.parametrize("field, value", OUT_OF_RANGE)
+def test_out_of_range_unit_is_400_not_500_and_changes_nothing(soft_client, slid, no_network, field, value):
+    before = _get(soft_client, slid)
+
+    resp = soft_client.patch(f"/api/listings/{slid}", json={field: value})
+
+    assert resp.status_code == 400, resp.text
+    assert _get(soft_client, slid) == before
+
+
+@pytest.mark.parametrize("bad", [{"price": 10**30}, {"area_m2": 1e308}, {"bedrooms": 2**63}, {"price": -1}])
+def test_notes_and_status_are_not_written_when_a_unit_value_is_invalid(soft_client, slid, no_network, bad):
+    before = _get(soft_client, slid)
+
+    resp = soft_client.patch(f"/api/listings/{slid}", json={"notes": "X", "status": "shortlist", **bad})
+
+    assert resp.status_code == 400, resp.text
+    assert _get(soft_client, slid) == before
+    # a later, unrelated request that commits must not save anything left over from the failed one
+    assert soft_client.patch(f"/api/listings/{slid}", json={"availability": "gone"}).status_code == 200
+    after = _get(soft_client, slid)
+    assert after["notes"] == before["notes"]
+    assert after["status"] == before["status"]
+    for field in ("price", "area_m2", "bedrooms"):
+        assert after[field] == before[field]
