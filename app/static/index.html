@@ -12,7 +12,7 @@ header{display:flex;gap:18px;align-items:center;padding:12px 20px;border-bottom:
 h1{font-size:16px;margin:0 8px 0 0}nav button{background:none;border:0;padding:6px 10px;font:inherit;color:var(--mut);cursor:pointer;border-bottom:2px solid transparent}
 nav button.on{color:var(--ink);border-color:var(--acc)}main{max-width:1200px;margin:0 auto;padding:18px 20px 60px}
 table{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:8px;overflow:hidden}
-th,td{padding:7px 9px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}th{font-weight:600;color:var(--mut);font-size:12px}
+th,td{padding:7px 9px;text-align:left;border-bottom:1px solid var(--line);white-space:nowrap}th{font-weight:600;color:var(--mut);font-size:12px}th.sort{cursor:pointer;user-select:none}
 td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}tr.row{cursor:pointer}tr.row:hover td{background:color-mix(in srgb,var(--acc) 6%,transparent)}
 tr.ex td{opacity:.5}.card{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:14px 16px;margin:12px 0}
 .bar{display:inline-block;width:60px;height:8px;background:var(--line);border-radius:4px;vertical-align:middle;margin-right:6px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
@@ -37,10 +37,16 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const eur=n=>n==null?'—':Math.round(n).toLocaleString('es-ES')+' €';
 const pct=(n,d=0)=>n==null?'—':(n*100).toFixed(d)+'%';
 async function api(path,opt={}){const r=await fetch('/api'+path,{headers:opt.body&&typeof opt.body==='object'?{'Content-Type':'application/json'}:{},...opt,body:opt.body&&typeof opt.body==='object'?JSON.stringify(opt.body):opt.body});
-  if(!r.ok){let m;try{m=(await r.json()).detail}catch{m=r.statusText}throw new Error(m)}return (r.headers.get('content-type')||'').includes('json')?r.json():r.text()}
+  if(!r.ok){let m;try{m=(await r.json()).detail}catch{m=r.statusText}const er=new Error(m);er.status=r.status;throw er}return (r.headers.get('content-type')||'').includes('json')?r.json():r.text()}
 const COMP={price:'Precio vs referencia',affordability:'Hipoteca',neighbourhood:'Barrio',amenities:'Servicios',fit:'Encaje',momentum:'Bajada de precio'};
 const TABS={ranking:'Oportunidades',zonas:'Zonas',needs:'Necesidades',mortgage:'Hipoteca',data:'Datos'};
-let tab='ranking',showEx=false,open=null,needs=null;
+let tab='ranking',showEx=false,open=null,needs=null,sortKey=null,sortDir=1;
+const fmtDate=v=>{const m=/^(\d{4})-(\d{2})-(\d{2})/.exec(v||'');return m?`${m[3]}/${m[2]}/${m[1]}`:'desconocido'};
+const dkey=v=>{const m=/^(\d{4}-\d{2}-\d{2})/.exec(v||'');return m?m[1]:null};
+function sortRows(L){if(!sortKey)return L;return L.map((l,i)=>[l,i]).sort((a,b)=>{const x=dkey(a[0][sortKey]),y=dkey(b[0][sortKey]);
+  if(x===null&&y===null)return a[1]-b[1];if(x===null)return 1;if(y===null)return -1;return x===y?a[1]-b[1]:(x<y?-sortDir:sortDir)}).map(p=>p[0])}
+const arrow=k=>sortKey===k?(sortDir>0?' ▲':' ▼'):'';
+const DUP=/^posible duplicado de (.+)$/;
 function nav(){$('#nav').innerHTML=Object.entries(TABS).map(([k,v])=>`<button class="${k===tab?'on':''}" data-t="${k}">${v}</button>`).join('');
   $('#nav').onclick=e=>{if(e.target.dataset.t){tab=e.target.dataset.t;render()}}}
 const bar=v=>v==null?'<span class="mut">—</span>':`<span class="bar"><i style="width:${Math.round(v*100)}%"></i></span>${Math.round(v*100)}`;
@@ -48,33 +54,45 @@ function toast(m,bad){const t=document.createElement('div');t.textContent=m;t.st
 
 async function renderRanking(){
   const L=await api('/listings');needs=await api('/needs');
-  const vis=L.filter(l=>showEx||(!l.eval.excluded.length&&l.status!=='discarded'));
+  const vis=sortRows(L).filter(l=>showEx||(!l.eval.excluded.length&&l.status!=='discarded'));
   $('#stat').textContent=`${L.length} anuncios · ${L.filter(l=>!l.eval.excluded.length).length} cumplen tus filtros`;
   let h=`<div class="row2" style="margin-bottom:10px"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ex" ${showEx?'checked':''} style="width:auto"> mostrar descartados por filtros</label><a href="/api/export.csv" class="mut">exportar CSV</a></div>`;
   if(!L.length)h+=`<div class="card">Aún no hay anuncios. Ve a <b>Datos</b> para importar un CSV, añadir uno a mano o lanzar la búsqueda de Idealista.</div>`;
-  h+=`<div class="scroll"><table><thead><tr><th>Score</th><th>Zona</th><th>Tipo</th><th class="n">Precio</th><th class="n">m²</th><th class="n">€/m²</th><th class="n">vs ref.</th><th class="n">Hab</th><th class="n">Esfuerzo</th><th>Estado</th></tr></thead><tbody>`;
+  h+=`<div class="scroll"><table><thead><tr><th class="sort" data-s="" title="Orden por score">Score${sortKey?'':' ▼'}</th><th>Zona</th><th>Tipo</th><th class="n">Precio</th><th class="n">m²</th><th class="n">€/m²</th><th class="n">vs ref.</th><th class="n">Hab</th><th class="n">Esfuerzo</th><th>Estado</th><th class="sort" data-s="published_at">Publicado${arrow('published_at')}</th><th class="sort" data-s="price_updated_at">Actualizado${arrow('price_updated_at')}</th></tr></thead><tbody>`;
   for(const l of vis){const e=l.eval,m=e.mortgage;
     h+=`<tr class="row ${e.excluded.length?'ex':''}" data-id="${esc(l.id)}"><td>${e.score==null?'<span class="mut">—</span>':bar(e.score/100)}${e.coverage<.6?' <span class="warn" title="Poca cobertura de datos">⚠</span>':''}</td>
     <td>${esc(l.zone_id)}</td><td>${esc(l.property_type)}</td><td class="n">${eur(l.price)}</td><td class="n">${l.area_m2??'—'}</td><td class="n">${eur(e.price_m2)}</td>
     <td class="n ${e.discount_vs_benchmark>0?'good':e.discount_vs_benchmark<0?'bad':''}">${e.discount_vs_benchmark==null?'—':(e.discount_vs_benchmark>0?'−':'+')+pct(Math.abs(e.discount_vs_benchmark))}</td>
-    <td class="n">${l.bedrooms??'—'}</td><td class="n ${m&&m.effort_ratio>needs.finance.max_effort?'bad':''}">${m?pct(m.effort_ratio):'—'}</td><td><span class="pill">${esc(l.status)}</span></td></tr>`;
-    if(open===l.id)h+=`<tr class="det"><td colspan="10">${detail(l)}</td></tr>`}
+    <td class="n">${l.bedrooms??'—'}</td><td class="n ${m&&m.effort_ratio>needs.finance.max_effort?'bad':''}">${m?pct(m.effort_ratio):'—'}</td><td><span class="pill">${esc(l.status)}</span></td><td>${fmtDate(l.published_at)}</td><td>${fmtDate(l.price_updated_at)}</td></tr>`;
+    if(open===l.id)h+=`<tr class="det"><td colspan="12">${detail(l)}</td></tr>`}
   h+='</tbody></table></div>';$('#main').innerHTML=h;
+  $('thead').onclick=e=>{const th=e.target.closest('th[data-s]');if(!th)return;const k=th.dataset.s;
+    if(!k){sortKey=null}else if(sortKey===k){sortDir=-sortDir}else{sortKey=k;sortDir=1}renderRanking()};
+  const ph=$('#ph');if(ph){const id=open;api('/listings/'+encodeURIComponent(id)+'/price-history').then(H=>{if(open===id&&$('#ph'))$('#ph').innerHTML=priceHist(H,L.find(x=>x.id===id))}).catch(err=>{if($('#ph'))$('#ph').innerHTML='<span class="bad">No se pudo cargar el historial: '+esc(err.message)+'</span>'})}
   $('#ex').onchange=e=>{showEx=e.target.checked;renderRanking()};
   $('tbody').onclick=async e=>{const tr=e.target.closest('tr.row');if(tr){open=open===tr.dataset.id?null:tr.dataset.id;renderRanking();return}
     const b=e.target.closest('button[data-act]');if(!b)return;const id=b.dataset.id;
+    if(b.dataset.act==='merge'){const into=b.dataset.into;if(!confirm('¿Fusionar este anuncio con '+into+'? Se tratarán como el mismo inmueble.'))return;
+      try{await api('/listings/'+encodeURIComponent(id)+'/merge',{method:'POST',body:{into}});toast('Anuncios fusionados');renderRanking()}
+      catch(err){toast(err.status===404?'No se encontró uno de los anuncios (puede haberse eliminado).':err.status===409?'No se puede fusionar: crearía un ciclo de fusiones.':err.status===400?'Petición de fusión no válida.':'No se pudo fusionar: '+err.message,1)}return}
     try{if(b.dataset.act==='amen'){b.textContent='Consultando OSM…';await api('/listings/'+encodeURIComponent(id)+'/amenities',{method:'POST'})}
       else await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{status:b.dataset.act}});renderRanking()}catch(err){toast(err.message,1);b.textContent='Reintentar'}}}
+function priceHist(H,l){if(!H.length)return '<span class="mut">sin historial de precios</span>';
+  const rows=H.map(r=>`<span class="mut">${r.origin==='alert_previous'?'antes del '+fmtDate(r.day):fmtDate(r.day)}</span><span>${eur(r.price)}</span>`).join('');
+  return `<div class="kv">${rows}<span class="mut"><b>Actual</b></span><span><b>${eur(l.price)}</b></span></div>`}
 function detail(l){const e=l.eval,m=e.mortgage;
   let h=`<div class="row2" style="justify-content:space-between"><b>${esc(l.title||l.id)}</b><span>${l.url?`<a href="${esc(l.url)}" target="_blank" rel="noopener">abrir anuncio ↗</a>`:''}</span></div>`;
   h+=`<div class="grid" style="margin-top:8px"><div><h3>Componentes del score</h3><div class="kv">${Object.entries(COMP).map(([k,n])=>`<span class="mut">${n}</span><span>${bar(e.components[k])}</span>`).join('')}</div>
   <p class="mut">Referencia de precio: ${e.benchmark_m2?eur(e.benchmark_m2)+'/m² ('+esc(e.benchmark_source)+')':'ninguna'} · cobertura de datos ${pct(e.coverage)}</p></div>`;
   if(m)h+=`<div><h3>Hipoteca (estimación)</h3><div class="kv"><span class="mut">Impuestos + gastos</span><span>${eur(m.taxes+m.other_costs)}</span><span class="mut">Préstamo (LTV ${pct(m.ltv)})</span><span>${eur(m.loan)}</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span>
     ${m.stress.map(s=>`<span class="mut">Tipo ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio)+')':''}</span>`).join('')}</div></div>`;
-  h+=`<p class="mut">Fuente: ${l.source==='idealista'?'Idealista':esc(l.source||'desconocido')} · visto por primera vez: ${esc(l.first_seen||'desconocido')} · última vez: ${esc(l.last_seen||'desconocido')}</p>`;
+  const sg=l.sightings||[];
+  h+=`<p class="mut">Fuente: ${sg.length?'Idealista (email de alerta)':l.source==='idealista'?'Idealista':esc(l.source||'desconocido')} · visto por primera vez: ${esc(l.first_seen||'desconocido')} · última vez: ${esc(l.last_seen||'desconocido')}</p>`;
+  if(sg.length)h+=`<h3>Emails de alerta</h3><ul class="fl">${sg.map(x=>`<li><span class="mut">${esc(fmtDate(x.alert_date))}</span> ${esc(x.subject||'sin asunto')}</li>`).join('')}</ul>`;
+  h+=`<h3>Historial de precios</h3><div id="ph"><span class="mut">Cargando…</span></div>`;
   const a=Object.entries(e.amenities);h+=`<div><h3>Servicios cercanos (OSM)</h3>${a.length?`<div class="kv">${a.map(([k,v])=>`<span class="mut">${esc(k)}</span><span>${v.nearest_m} m</span>`).join('')}</div>`:'<span class="mut">sin calcular</span>'}</div></div>`;
   if(e.excluded.length)h+=`<h3>No cumple tus filtros</h3><ul class="fl bad">${e.excluded.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
-  if(e.flags.length)h+=`<h3>Avisos</h3><ul class="fl warn">${e.flags.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
+  if(e.flags.length)h+=`<h3>Avisos</h3><ul class="fl warn">${e.flags.map(x=>{const d=DUP.exec(x);return `<li>${esc(x)}${d?` <button class="b" data-act="merge" data-id="${esc(l.id)}" data-into="${esc(d[1])}">Fusionar con…</button>`:''}</li>`}).join('')}</ul>`;
   h+=`<div class="row2" style="margin-top:8px"><button class="b p" data-act="shortlist" data-id="${esc(l.id)}">★ Preseleccionar</button><button class="b" data-act="discarded" data-id="${esc(l.id)}">Descartar</button><button class="b" data-act="amen" data-id="${esc(l.id)}" ${l.lat==null?'disabled title="sin coordenadas"':''}>Calcular servicios (OSM)</button></div>`;return h}
 
 async function renderZones(){
