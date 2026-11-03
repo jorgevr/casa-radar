@@ -71,3 +71,12 @@ boolean sí/no list in `_show`). Otherwise new-build stated by an alert is label
 writes over a stored value (unchanged). No category / T034 logic.
 Decision: the flag is also raised for `new_build_origin == 'user'` rows (the tests only require the value to stay).
 Gates: compileall OK; pytest -m "not slow" 154 passed; anonymise rc=0; forbidden-path and requirements diffs empty.
+
+## Fix loop 5 (applied by the coordinator at the user's request)
+
+Review r4 finding 1: `new_build` was protected for `field_sources.new_build == 'idealista_api'`, but the
+data-model says an email's new-build statement wins over everything except a user value. Change in
+`app/derive.py` (`nb_owned`): protect only `new_build_origin == 'user'` or a `manual`/`csv` origin
+(`USER_ORIGINS`). An API value is overwritten by an alert that states new-build (origin `email`, label
+`alert`, no `la alerta dice` flag). The existing 154 tests still pass without edits; the regression tests
+for the API case are written by a Test Author (handoffs/T026-fix4-tests.md).

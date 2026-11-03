@@ -93,8 +93,8 @@ def derive_listing(conn, listing_id: str) -> None:
     }
     price_owned = existing is not None and existing["price"] is not None and sources.get("price") in USER_ORIGINS
     nb_owned = existing is not None and existing["new_build"] is not None and (
-        existing["new_build_origin"] == "user" or sources.get("new_build") in (*USER_ORIGINS, "idealista_api"))
-    if nb_owned:  # a user or API new-build value is kept; an alert stating otherwise is flagged (FR-023)
+        existing["new_build_origin"] == "user" or sources.get("new_build") in USER_ORIGINS)
+    if nb_owned:  # a user's new-build value is kept; an alert stating otherwise is flagged (FR-023). An API value is not user-owned: an email's statement wins (data-model)
         values["new_build"], values["new_build_origin"] = existing["new_build"], existing["new_build_origin"]
         latest = next((r for r in reversed(rows) if r["new_build_stated"]), None)
         if latest is not None and existing["new_build"] != 1:
