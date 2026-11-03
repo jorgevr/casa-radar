@@ -46,16 +46,9 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
     # ── listings ────────────────────────────────────────────────────────────
     def merge_groups() -> dict[str, list[str]]:
         """Final live target id -> ids merged into it (chains resolved; members of a cycle have no target)."""
-        into = {r["id"]: r["merged_into"] for r in conn.execute(
-            "SELECT id, merged_into FROM listings WHERE merged_into IS NOT NULL AND merged_into <> ''")}
         groups: dict[str, list[str]] = {}
-        for src, cur in into.items():
-            seen = {src}
-            while cur in into and cur not in seen:
-                seen.add(cur)
-                cur = into[cur]
-            if cur not in into:
-                groups.setdefault(cur, []).append(src)
+        for src, target in scoring.merge_targets(conn).items():
+            groups.setdefault(target, []).append(src)
         return groups
 
     def with_provenance(rows: list[dict]) -> list[dict]:
@@ -109,10 +102,10 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
     def price_history(lid: str):
         if conn.execute("SELECT 1 FROM listings WHERE id=?", (lid,)).fetchone() is None:
             raise HTTPException(404, "listing not found")
-        # Same ordering as scoring.py (data-model "Extended: price_history"); duplicated, not shared.
+        ids = scoring.combined_history_ids(conn, lid)  # own rows plus those of listings merged into it
         rows = conn.execute(
-            "SELECT day, price, origin FROM price_history WHERE listing_id=? "
-            "ORDER BY day, (origin = 'alert_previous') DESC, rowid", (lid,))
+            f"SELECT day, price, origin FROM price_history WHERE listing_id IN ({','.join('?' * len(ids))}) "
+            f"ORDER BY {scoring.HISTORY_ORDER}", ids)
         return [{"day": r["day"], "price": r["price"], "origin": r["origin"]} for r in rows]
 
     @app.get("/api/listings")

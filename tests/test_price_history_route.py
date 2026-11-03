@@ -151,7 +151,8 @@ def test_merged_listing_still_answers_for_its_own_id(seed, client, no_network):
     assert _tuples(resp.json()) == [("2026-10-21", 400_000, "alert")]
     resp = client.get(_url(dst))
     assert resp.status_code == 200, resp.text
-    assert _tuples(resp.json()) == [("2026-10-22", 410_000, "alert")]  # the target's own history, not combined
+    assert _tuples(resp.json()) == [("2026-10-21", 400_000, "alert"),
+                                    ("2026-10-22", 410_000, "alert")]  # FR-018: the target shows combined history
 
 
 def test_get_has_no_write_side_effects(seed, db_path, client, no_network):
