@@ -19,19 +19,42 @@ CATEGORIES_PATH = ROOT / "config" / "alert_categories.yaml"  # read at call time
 UNKNOWN = "unknown"
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that rejects a key repeated inside one mapping (PyYAML would silently keep the last value)."""
+
+    def construct_document(self, node):
+        self._root = node
+        return super().construct_document(node)
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if isinstance(key, str) and key in seen:
+                root = getattr(self, "_root", None)
+                items = root.value if isinstance(root, yaml.SequenceNode) else []
+                index = next((i for i, n in enumerate(items, start=1) if n is node), None)
+                at = f"rule {index}" if index else "a mapping"
+                raise ValueError(f"{CATEGORIES_PATH.name}: {at}: key '{key}' is repeated")
+            seen.add(key if isinstance(key, str) else id(key_node))
+        return super().construct_mapping(node, deep)
+
+
 def load_rules() -> list[dict]:
     """The rules as written: a list of {"contains": str, "category": str}. A missing, empty or comment-only file is
     no rules. Anything else malformed raises one ValueError naming the file (and the entry), never a silent drop."""
     if not CATEGORIES_PATH.exists():
         return []
-    where = str(CATEGORIES_PATH)
+    where = CATEGORIES_PATH.name  # file name only: the full local path stays out of messages
     try:
         with open(CATEGORIES_PATH, encoding="utf-8") as f:
-            data = yaml.safe_load(f)
+            data = yaml.load(f.read(), Loader=_UniqueKeyLoader)  # string source: marks omit the path
     except UnicodeDecodeError as exc:
         raise ValueError(f"{where}: the file is not valid UTF-8 ({exc.reason} at byte {exc.start})") from exc
     except yaml.YAMLError as exc:
         raise ValueError(f"{where}: invalid YAML: {exc}") from exc
+    except OSError as exc:  # name the file only: the full local path stays out of messages
+        raise ValueError(f"{CATEGORIES_PATH.name}: cannot read the file ({type(exc).__name__})") from exc
     if data is None:
         return []
     return validate_rules(data, where)
@@ -51,14 +74,20 @@ def validate_rules(data, where: str = "rules") -> list[dict]:
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{where}: entry {i}: '{key}' must be a non-empty string"
                                  f"{' (missing)' if key not in entry else ''}")
-        rules.append({"contains": entry["contains"], "category": entry["category"]})
+        extra = sorted(map(str, set(entry) - {"contains", "category"}))
+        if extra:
+            raise ValueError(f"{where}: entry {i}: unknown key(s) {', '.join(extra)}")
+        contains, category = entry["contains"], entry["category"].strip()
+        if not slug(contains):
+            raise ValueError(f"{where}: entry {i}: 'contains' has no letters or digits")
+        rules.append({"contains": contains, "category": category})
     return rules
 
 
 def save_rules(rules: list[dict]) -> None:
     """Atomic: write a temp file next to the target, then replace it, so a failure never leaves a half-written file."""
     CATEGORIES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    data = [{"contains": r["contains"], "category": r["category"]} for r in rules]
+    data = [{"contains": r["contains"], "category": r["category"].strip()} for r in rules]
     tmp = CATEGORIES_PATH.with_name(CATEGORIES_PATH.name + ".tmp")
     try:
         with open(tmp, "w", encoding="utf-8") as f:
