@@ -14,7 +14,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, db, mortgage, scoring
+from . import alerts, db, derive, mortgage, scoring
 from .etl import indicators as ind_etl
 from .etl import overpass
 from .listings import upsert_listing
@@ -122,9 +122,16 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
             raise HTTPException(404, "listing not found")
         if "status" in body and body["status"] not in {"new", "shortlist", "discarded"}:
             raise HTTPException(400, "status must be new | shortlist | discarded")
+        if "availability" in body and (not isinstance(body["availability"], str)
+                                       or body["availability"] not in {"active", "gone"}):
+            raise HTTPException(400, "availability must be active | gone")
         for k in ("status", "notes"):
             if k in body:
                 conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
+        if "availability" in body:  # only the user changes availability (FR-019); the date records each change
+            conn.execute("UPDATE listings SET availability=?, availability_changed_at=? WHERE id=?",
+                         (body["availability"], db.today(), lid))
+            derive.derive_listing(conn, lid)  # refresh the relisted flag against the new mark
         conn.commit()
         return {"ok": True}
 
