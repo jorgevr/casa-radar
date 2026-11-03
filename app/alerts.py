@@ -85,7 +85,7 @@ def _problem_reason(problems) -> str:
 
 
 def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = None,
-                    mailbox_id: str | None = None, run_id: int) -> Outcome:
+                    mailbox_id: str | None = None, run_id: int, rules: list[dict] | None = None) -> Outcome:
     msg = email.message_from_bytes(raw, policy=policy.default)
     content_hash = hashlib.sha256(raw).hexdigest()
     email_id = str(msg.get("Message-ID") or "").strip() or f"sha256:{content_hash}"
@@ -127,7 +127,8 @@ def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = No
                 out = Outcome(email_id, "failed", REASON_NO_DATE)
             else:
                 out = Outcome(email_id, "imported", notices=list(result.notices))
-        category, rules_matched = categories.categorise(categories.email_text(row.get("search_name"), subject))
+        category, rules_matched = categories.categorise(categories.email_text(row.get("search_name"), subject),
+                                                       rules)
         row.update(outcome=out.outcome, reason=out.reason, category=category,
                    category_rules_matched=json.dumps(rules_matched, ensure_ascii=False))
         conn.execute(f"INSERT INTO alert_emails({','.join(row)}) VALUES({','.join('?' * len(row))})",
@@ -208,6 +209,10 @@ def import_paths(conn, paths, kind: str = "file_cli") -> dict:
     problems: list[dict] = []
     notices: list[dict] = []
     try:
+        try:
+            rules, rules_error = categories.load_rules(), None
+        except ValueError as exc:  # malformed rules must not lose emails: store them as 'unknown', report it
+            rules, rules_error = [], f"ValueError: {exc}"
         items: list[tuple[str, bytes]] = []
         for path in _expand(paths):
             try:
@@ -219,7 +224,8 @@ def import_paths(conn, paths, kind: str = "file_cli") -> dict:
                 problems.append({"email_id": path.name, "alert_date": None, "subject": None,
                                  "outcome": "failed", "reason": reason})
         for file_name, raw in sorted(items, key=_sort_key):
-            out = process_message(conn, raw, origin="file", file_name=file_name, run_id=run_id)
+            out = process_message(conn, raw, origin="file", file_name=file_name, run_id=run_id,
+                                  rules=rules)
             if out.outcome == "already":
                 continue
             row = conn.execute("SELECT subject, alert_date FROM alert_emails WHERE email_id=?",
@@ -231,7 +237,7 @@ def import_paths(conn, paths, kind: str = "file_cli") -> dict:
     except Exception as exc:
         finish_run(conn, run_id, "failed", type(exc).__name__)
         raise
-    finish_run(conn, run_id, "ok")
+    finish_run(conn, run_id, "ok", rules_error)
     summary = dict(conn.execute("SELECT * FROM import_runs WHERE run_id=?", (run_id,)).fetchone())
     summary.pop("notes", None)
     return {**summary, "problems": problems, "notices": notices}
