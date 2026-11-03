@@ -2,8 +2,8 @@
 
 Required behaviour:
   * validate_rules / load_rules reject, with a ValueError naming the 1-based rule index: unknown extra keys in a
-    rule; a duplicate rule (same slug(contains) AND same category); a `contains` that is empty or reduces to
-    nothing after slug() (e.g. only punctuation). The same `contains` with a different category stays allowed
+    rule; a key repeated inside one rule mapping (PyYAML would silently keep the last); a `contains` that is empty or reduces to
+    nothing after slug() (e.g. only punctuation). The identical rules and the same `contains` with another category stay allowed
     (conflicts are designed: categorise gives 'unknown'). Whitespace around `category` is trimmed, on load,
     on validate and on save.
   * An OSError reading the rules file (a directory instead of a file) becomes a ValueError that names the file
@@ -60,19 +60,32 @@ def test_unknown_extra_key_is_rejected_by_validate():
     assert "2" in str(exc.value)
 
 
-# -- duplicates -------------------------------------------------------------------------------------------
-def test_duplicate_rule_is_rejected_on_load(rules_path):
-    _bad_third(rules_path, [OK1, OK2, {"contains": "pisos", "category": "flat"}])
+# -- duplicate keys inside one rule -----------------------------------------------------------------------
+# PyYAML silently keeps the last value of a repeated key; the loader must reject it instead.
+def test_repeated_key_inside_a_rule_is_rejected(rules_path):
+    rules_path.write_text(
+        "- contains: pisos\n  category: flat\n"
+        "- contains: casas\n  category: house\n"
+        "- contains: chalets\n  category: villa\n  category: chalet\n", encoding="utf-8")
+    with pytest.raises(ValueError) as exc:
+        categories.load_rules()
+    msg = str(exc.value).replace(str(rules_path), "")
+    assert rules_path.name in str(exc.value)
+    assert "category" in msg  # the repeated key
+    assert "3" in msg  # 1-based rule index
 
 
-def test_duplicate_rule_is_compared_after_slug(rules_path):
-    # "PISOS " and "pisos" are the same text for matching purposes
-    _bad_third(rules_path, [OK1, OK2, {"contains": "PISOS ", "category": "flat"}])
+def test_repeated_contains_key_is_rejected(rules_path):
+    rules_path.write_text("- contains: pisos\n  contains: casas\n  category: flat\n", encoding="utf-8")
+    with pytest.raises(ValueError) as exc:
+        categories.load_rules()
+    assert "contains" in str(exc.value).replace(str(rules_path), "")
 
 
-def test_duplicate_rule_is_rejected_by_validate():
-    with pytest.raises(ValueError):
-        categories.validate_rules([OK1, dict(OK1)])
+def test_same_contains_and_same_category_still_loads(rules_path):
+    # Not a duplicate-key problem: two separate rules may be identical (test_categories_rules_file relies on it)
+    _write(rules_path, [OK1, dict(OK1)])
+    assert categories.load_rules() == [OK1, OK1]
 
 
 def test_same_contains_with_other_category_is_allowed(rules_path):
@@ -101,11 +114,6 @@ def test_category_is_trimmed_on_load(rules_path):
 
 def test_category_is_trimmed_by_validate():
     assert categories.validate_rules([{"contains": "pisos", "category": " flat "}])[0]["category"] == "flat"
-
-
-def test_trimmed_categories_count_for_duplicates():
-    with pytest.raises(ValueError):
-        categories.validate_rules([OK1, {"contains": "pisos", "category": " flat"}])
 
 
 def test_category_is_trimmed_on_save(rules_path):
