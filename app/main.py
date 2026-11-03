@@ -14,7 +14,7 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, db, mortgage, scoring
+from . import alerts, db, derive, mortgage, scoring
 from .etl import indicators as ind_etl
 from .etl import overpass
 from .listings import upsert_listing
@@ -102,6 +102,17 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
         conn.execute("UPDATE listings SET merged_into=? WHERE id=?", (into, lid))
         conn.commit()
         return {"ok": True, "id": lid, "merged_into": into}
+
+    @app.get("/api/listings/{lid:path}/price-history")
+    def price_history(lid: str):
+        if conn.execute("SELECT 1 FROM listings WHERE id=?", (lid,)).fetchone() is None:
+            raise HTTPException(404, "listing not found")
+        # Same ordering as scoring.py (data-model "Extended: price_history"); duplicated, not shared.
+        rows = conn.execute(
+            "SELECT day, price, origin FROM price_history WHERE listing_id=? "
+            "ORDER BY day, (origin = 'alert_previous') DESC, rowid", (lid,))
+        return [{"day": r["day"], "price": r["price"], "origin": r["origin"]} for r in rows]
+
     @app.get("/api/listings")
     def listings():
         return with_provenance(scoring.rank(conn, needs()))
@@ -122,9 +133,16 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
             raise HTTPException(404, "listing not found")
         if "status" in body and body["status"] not in {"new", "shortlist", "discarded"}:
             raise HTTPException(400, "status must be new | shortlist | discarded")
+        if "availability" in body and (not isinstance(body["availability"], str)
+                                       or body["availability"] not in {"active", "gone"}):
+            raise HTTPException(400, "availability must be active | gone")
         for k in ("status", "notes"):
             if k in body:
                 conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
+        if "availability" in body:  # only the user changes availability (FR-019); the date records each change
+            conn.execute("UPDATE listings SET availability=?, availability_changed_at=? WHERE id=?",
+                         (body["availability"], db.today(), lid))
+            derive.derive_listing(conn, lid)  # refresh the relisted flag against the new mark
         conn.commit()
         return {"ok": True}
 
