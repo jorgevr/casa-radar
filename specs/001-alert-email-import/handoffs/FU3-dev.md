@@ -8,3 +8,9 @@
 6. `NB_FLAG` moved to the top of the script with a comment pointing at app/scoring.py (the only place that matches it is the `fl` filter and the nbBlock warning).
 
 Checks: node --check on the inline script OK; pytest -m "not slow" (see commit report). Reviewer: no JS harness, behaviour not exercised in a browser.
+
+## Round 2 (review 1 fixes)
+- PATCH/POST/PUT and the re-render are now separate try blocks at every site: availability toggle, status/amenities, zone indicators, new-build, merge. A failed re-render shows `renderWarn` ("Guardado, pero no se pudo actualizar la vista (detalle: ...)") and never a save failure or a "Reintentar" prompt.
+- Stuck states: new-build buttons re-enabled if the render throws; availability button re-enabled likewise; on merge success the button is re-enabled and `renderRanking()` is awaited with its own error message.
+- New helper `errTxt(prefix, err)` gives "<prefijo> (detalle: ...)" (or the offline message for TypeError). Applied to the raw `toast(err.message)` sites (status/amenities, zones, needs, mortgage, CSV import `go`) and the data-import and category-load messages.
+- Not done: finding 2 minor (catNames not refreshed when edits were typed during a save). Gates: base ref is jorgevr/spec-kit-3-feature; diff lists only index.html, FU3-dev.md and the review file (coordinator's); requirements.txt diff empty.
