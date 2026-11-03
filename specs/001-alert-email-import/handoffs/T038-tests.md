@@ -18,3 +18,9 @@ Decisions / review notes:
 - Null-zone listings are asserted to have no benchmark (no notary data, no zone median), so also no
   "sin referencia de precio" assertion is made either way.
 - Ran only this test, once, with CASA_* pointing at %TEMP%\casa-agent\P6-T038.
+
+## Fix: bedrooms
+Listings now have bedrooms=4 (example needs `min_bedrooms: 4`); the earlier 3 made "3 hab < 4" a correct
+exclusion. Checked the other example hard filters: chalet is an allowed type, 120 m2 >= 90, require_garden
+false, min_plot_m2 and max_price null, so nothing but zones can exclude. Medians unchanged. On this branch
+the test still fails at the `(None, "house")` median key.
