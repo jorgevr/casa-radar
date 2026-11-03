@@ -14,7 +14,9 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, db, derive, mortgage, scoring
+from typing import Any
+
+from . import alerts, categories, db, derive, mortgage, scoring
 from .etl import indicators as ind_etl
 from .etl import overpass
 from .listings import upsert_listing
@@ -127,10 +129,43 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
         ids = csv_import.import_csv_text(conn, text, needs())
         return {"imported": len(ids)}
 
+    def categories_view():
+        try:
+            rules = categories.load_rules()
+        except ValueError as exc:  # malformed rules file: a clear message, not a traceback
+            raise HTTPException(500, f"alert category rules unreadable: {exc}")
+        names = conn.execute(
+            "SELECT search_name AS name, MIN(category) AS category, COUNT(*) AS emails FROM alert_emails "
+            "WHERE search_name IS NOT NULL AND search_name <> '' GROUP BY search_name ORDER BY search_name").fetchall()
+        return {"rules": rules,
+                "search_names": [{"name": r["name"], "category": r["category"] or categories.UNKNOWN,
+                                  "emails": r["emails"]} for r in names]}
+
+    @app.get("/api/categories")
+    def get_categories():
+        return categories_view()
+
+    @app.put("/api/categories")
+    def put_categories(body: Any = Body(...)):
+        if not isinstance(body, dict) or "rules" not in body:
+            raise HTTPException(400, 'body must be {"rules": [{"contains": ..., "category": ...}]}')
+        try:
+            rules = categories.validate_rules(body["rules"], "rules")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        categories.save_rules(rules)  # atomic: temp file + replace
+        try:
+            categories.recategorise_all(conn)  # FR-031: all stored emails, no re-import
+        except ValueError as exc:
+            raise HTTPException(500, f"alert category rules unreadable: {exc}")
+        return categories_view()
+
     @app.patch("/api/listings/{lid:path}")
     def patch_listing(lid: str, body: dict = Body(...)):
         if conn.execute("SELECT 1 FROM listings WHERE id=?", (lid,)).fetchone() is None:
             raise HTTPException(404, "listing not found")
+        if "new_build" in body and body["new_build"] is not None and not isinstance(body["new_build"], bool):
+            raise HTTPException(400, "new_build must be true | false | null")
         if "status" in body and body["status"] not in {"new", "shortlist", "discarded"}:
             raise HTTPException(400, "status must be new | shortlist | discarded")
         if "availability" in body and (not isinstance(body["availability"], str)
@@ -143,6 +178,11 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
             conn.execute("UPDATE listings SET availability=?, availability_changed_at=? WHERE id=?",
                          (body["availability"], db.today(), lid))
             derive.derive_listing(conn, lid)  # refresh the relisted flag against the new mark
+        if "new_build" in body:  # FR-033: a user value (origin 'user'); null clears it and the derivation decides again
+            v = body["new_build"]
+            conn.execute("UPDATE listings SET new_build=?, new_build_origin=? WHERE id=?",
+                         (None, None, lid) if v is None else (int(v), "user", lid))
+            derive.derive_listing(conn, lid)
         conn.commit()
         return {"ok": True}
 
