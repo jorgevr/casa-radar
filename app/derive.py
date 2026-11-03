@@ -33,7 +33,7 @@ def _date(day: str) -> str:
 
 def _show(col: str, value) -> str:
     """A value as the flags show it: 645.000 €, 150 m², sí/no, else plain text."""
-    if col in ("exterior", "elevator", "garage"):
+    if col in ("exterior", "elevator", "garage", "new_build"):
         return "sí" if value else "no"
     if isinstance(value, float) and value.is_integer():
         value = int(value)
@@ -92,6 +92,13 @@ def derive_listing(conn, listing_id: str) -> None:
         "price_updated_at": price_updated_at,
     }
     price_owned = existing is not None and existing["price"] is not None and sources.get("price") in USER_ORIGINS
+    nb_owned = existing is not None and existing["new_build"] is not None and (
+        existing["new_build_origin"] == "user" or sources.get("new_build") in (*USER_ORIGINS, "idealista_api"))
+    if nb_owned:  # a user or API new-build value is kept; an alert stating otherwise is flagged (FR-023)
+        values["new_build"], values["new_build_origin"] = existing["new_build"], existing["new_build_origin"]
+        latest = next((r for r in reversed(rows) if r["new_build_stated"]), None)
+        if latest is not None and existing["new_build"] != 1:
+            flags.append(f"la alerta dice {_show('new_build', 1)} ({_date(_day(latest['seen_at']))})")
     if existing is not None:
         # an alert never writes null over a known value (FR-011); the zone trio moves together
         kept_ids = {col for col in ("url", "title") if existing[col] is not None
@@ -120,6 +127,7 @@ def derive_listing(conn, listing_id: str) -> None:
     if price_owned:  # no alert changed the listing's price: no updated date, no alert price series (FR-007, FR-036)
         values["price_updated_at"], history = existing["price_updated_at"], []
     stated = {"price": _alert_price(rows), "url": _latest(rows, "link_direct"), "title": title,
+              "new_build": 1 if stated_new_build and not nb_owned else None,
               "municipality": municipality, "district": district, "zone_id": zone_id,
               **{col: _latest(rows, col) for col in ATTRIBUTES}}
     for col in kept_ids if existing is not None else ():

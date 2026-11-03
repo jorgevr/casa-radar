@@ -62,3 +62,12 @@ Gates: compileall OK; pytest -m "not slow" 138 passed; anonymise check rc=0; for
 3. Labels: `alert` is set only for non-null values an alert wrote (zone trio included); a field written null loses its label
    (so a district cleared by an alert zone has no label). Kept values keep their origin.
 Gates: compileall OK; pytest -m "not slow" 146 passed; anonymise rc=0; forbidden-path diff empty; requirements diff empty; no stray data/.
+
+## Fix loop 4 (review round 3: new_build), app/derive.py only
+`new_build` is user-owned when its stored value is non-null and `new_build_origin == 'user'` or `field_sources.new_build` is
+manual/csv/idealista_api (missing or `alert` do not protect). Then the stored value and origin are kept, the label is untouched,
+and an alert stating new-build while the stored value is not 1 adds `la alerta dice sí (<fecha>)` (`new_build` added to the
+boolean sí/no list in `_show`). Otherwise new-build stated by an alert is labelled `alert` in field_sources. Absence never
+writes over a stored value (unchanged). No category / T034 logic.
+Decision: the flag is also raised for `new_build_origin == 'user'` rows (the tests only require the value to stay).
+Gates: compileall OK; pytest -m "not slow" 154 passed; anonymise rc=0; forbidden-path and requirements diffs empty.
