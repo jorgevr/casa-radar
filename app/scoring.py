@@ -399,13 +399,25 @@ def combined_history_ids(conn, lid: str) -> list[str]:
     return [lid] + sorted(k for k, v in merge_targets(conn).items() if v == lid)
 
 
+def _price_is_user_owned(l: dict) -> bool:
+    try:
+        sources = json.loads(l.get("field_sources") or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(sources, dict) and sources.get("price") in USER_ORIGINS
+
+
 def rank(conn, needs: dict) -> list[dict]:
     ctx = build_context(conn, needs)
     amen = {r["listing_id"]: json.loads(r["data"]) for r in conn.execute("SELECT * FROM amenities")}
-    hist: dict[str, list[float]] = {}
-    for r in conn.execute(f"SELECT listing_id, price FROM price_history ORDER BY {HISTORY_ORDER}"):
-        hist.setdefault(r["listing_id"], []).append(r["price"])
     rows = [dict(r) for r in conn.execute("SELECT * FROM listings")]
+    # Once the price is the user's, the alert series no longer describes it (FR-007): ignore stored alert rows.
+    user_priced = {r["id"] for r in rows if _price_is_user_owned(r)}
+    hist: dict[str, list[float]] = {}
+    for r in conn.execute(f"SELECT listing_id, price, origin FROM price_history ORDER BY {HISTORY_ORDER}"):
+        if r["listing_id"] in user_priced and r["origin"] in ("alert", "alert_previous"):
+            continue
+        hist.setdefault(r["listing_id"], []).append(r["price"])
     live = [r for r in rows if not r.get("merged_into")]
     dups = duplicate_pairs(live, needs)
     # merge chains (A into B, B into C) resolve to the final target; a cycle ends the walk without a target
