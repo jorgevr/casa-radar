@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import math
 import os
 import re
 import tempfile
@@ -167,9 +168,24 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
         if "availability" in body and (not isinstance(body["availability"], str)
                                        or body["availability"] not in {"active", "gone"}):
             raise HTTPException(400, "availability must be active | gone")
+        for k in ("price", "area_m2"):  # unit values (FR-034): a positive number; null is not accepted
+            if k in body and (isinstance(body[k], bool) or not isinstance(body[k], (int, float))
+                              or not math.isfinite(body[k]) or body[k] <= 0):
+                raise HTTPException(400, f"{k} must be a number greater than 0")
+        if "bedrooms" in body and (isinstance(body["bedrooms"], bool) or not isinstance(body["bedrooms"], int)
+                                   or body["bedrooms"] < 0):
+            raise HTTPException(400, "bedrooms must be a whole number, 0 or more")
         for k in ("status", "notes"):
             if k in body:
                 conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
+        units = [k for k in ("price", "area_m2", "bedrooms") if k in body]
+        if units:  # the user's value, protected from later alerts (FR-023)
+            sources = json.loads(conn.execute("SELECT field_sources FROM listings WHERE id=?", (lid,)).fetchone()[0] or "{}")
+            for k in units:
+                conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
+                sources[k] = "manual"
+            conn.execute("UPDATE listings SET field_sources=? WHERE id=?", (json.dumps(sources, sort_keys=True), lid))
+            derive.derive_listing(conn, lid)
         if "availability" in body:  # only the user changes availability (FR-019); the date records each change
             conn.execute("UPDATE listings SET availability=?, availability_changed_at=? WHERE id=?",
                          (body["availability"], db.today(), lid))
