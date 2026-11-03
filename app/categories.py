@@ -7,6 +7,7 @@ accents do not matter. No match, or matches of two different categories, gives "
 from __future__ import annotations
 
 import json
+import os
 
 import yaml
 
@@ -33,6 +34,11 @@ def load_rules() -> list[dict]:
         raise ValueError(f"{where}: invalid YAML: {exc}") from exc
     if data is None:
         return []
+    return validate_rules(data, where)
+
+
+def validate_rules(data, where: str = "rules") -> list[dict]:
+    """Strict check shared by the file loader and PUT /api/categories; ValueError on the first problem."""
     if not isinstance(data, list):
         raise ValueError(f"{where}: must be a list of {{contains, category}}, found {type(data).__name__}")
     rules = []
@@ -50,10 +56,17 @@ def load_rules() -> list[dict]:
 
 
 def save_rules(rules: list[dict]) -> None:
+    """Atomic: write a temp file next to the target, then replace it, so a failure never leaves a half-written file."""
     CATEGORIES_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = [{"contains": r["contains"], "category": r["category"]} for r in rules]
-    with open(CATEGORIES_PATH, "w", encoding="utf-8") as f:
-        yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+    tmp = CATEGORIES_PATH.with_name(CATEGORIES_PATH.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False)
+        os.replace(tmp, CATEGORIES_PATH)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
 
 
 def categorise(text: str | None, rules: list[dict] | None = None) -> tuple[str, list[str]]:

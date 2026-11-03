@@ -5,7 +5,8 @@
   python -m app.cli import-indicators FILE.csv
   python -m app.cli import-emails PATH [PATH ...]   # .eml / .mbox files or folders
   python -m app.cli serpavi --file SERPAVI.xlsx [--all-madrid-region]
-  python -m app.cli mcp-schema            # print idealista-mcp tool schemas
+  python -m app.cli categories            # print category rules and each stored search name's category
+  python -m app.cli mcp-schema           # print idealista-mcp tool schemas
   python -m app.cli amenities [--all]     # fetch OSM amenities for listings with coordinates
 """
 from __future__ import annotations
@@ -65,6 +66,7 @@ def main(argv=None):
         c = sub.add_parser(name); c.add_argument("file")
     ie = sub.add_parser("import-emails"); ie.add_argument("paths", nargs="+", metavar="PATH")
     sp = sub.add_parser("serpavi"); sp.add_argument("--file", required=True); sp.add_argument("--all-madrid-region", action="store_true")
+    sub.add_parser("categories")
     sub.add_parser("mcp-schema")
     a = sub.add_parser("amenities"); a.add_argument("--all", action="store_true", help="refetch even if cached")
     args = ap.parse_args(argv)
@@ -92,6 +94,23 @@ def main(argv=None):
             sys.stdout.reconfigure(errors="backslashreplace")
         print(*format_import_summary(summary), sep="\n")
         return 1 if summary["n_failed"] > 0 else 0
+    elif args.cmd == "categories":
+        from . import categories
+        try:
+            rules = categories.load_rules()
+        except ValueError as exc:
+            print(f"reglas de categoría ilegibles: {exc}", file=sys.stderr); return 1
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(errors="backslashreplace")
+        print(f"Reglas ({len(rules)}):")
+        for r in rules:
+            print(f'  "{r["contains"]}" -> {r["category"]}')
+        names = conn.execute("SELECT search_name, COUNT(*) AS n FROM alert_emails WHERE search_name IS NOT NULL "
+                             "AND search_name <> '' GROUP BY search_name ORDER BY search_name").fetchall()
+        print(f"Búsquedas ({len(names)}):")
+        for n in names:
+            category, _ = categories.categorise(n["search_name"], rules)
+            print(f'  {category:<12} {n["n"]:>4} emails  {n["search_name"]}')
     elif args.cmd == "serpavi":
         from .etl import serpavi
         g = needs.get("geography", {})
