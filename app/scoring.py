@@ -262,7 +262,8 @@ def duplicate_pairs(rows: list[dict], needs: dict) -> dict[str, list[str]]:
     """R15: listing id -> ids of possible duplicates. Same zone, type and bedrooms; relative area and price
     differences |a-b|/max(a,b) within the configured limits (inclusive). Unknown values, no zone or
     development listings never match."""
-    cfg = {**DUPLICATE_DEFAULTS, **(needs.get("duplicates") or {})}
+    # a null sub-value means "not set": it falls back to the default instead of overriding it
+    cfg = {**DUPLICATE_DEFAULTS, **{k: v for k, v in (needs.get("duplicates") or {}).items() if v is not None}}
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
         if (r.get("development") or not r["zone_id"] or r["property_type"] in UNKNOWN_TYPES or not r["area_m2"] or not r["price"] or r["bedrooms"] is None):
@@ -325,13 +326,38 @@ def _conflict_rules(conn) -> dict[str, list[str]]:
     return out
 
 
+# Single definition of the price_history order (data-model "Extended: price_history"); main.py reuses it.
+HISTORY_ORDER = "day, (origin = 'alert_previous') DESC, rowid"
+
+
+def merge_targets(conn) -> dict[str, str]:
+    """Listing id -> final live target id for merged listings (chains resolved). Members of a cycle have no target
+    and are left out."""
+    into = {r["id"]: r["merged_into"] for r in conn.execute(
+        "SELECT id, merged_into FROM listings WHERE merged_into IS NOT NULL AND merged_into <> ''")}
+    out: dict[str, str] = {}
+    for lid in into:
+        seen, cur = {lid}, into[lid]
+        while cur in into and cur not in seen:
+            seen.add(cur)
+            cur = into[cur]
+        if cur not in into:
+            out[lid] = cur
+    return out
+
+
+def combined_history_ids(conn, lid: str) -> list[str]:
+    """The listing itself plus every listing merged into it, directly or through a chain (FR-018)."""
+    return [lid] + sorted(k for k, v in merge_targets(conn).items() if v == lid)
+
+
 def rank(conn, needs: dict) -> list[dict]:
     ctx = build_context(conn, needs)
     amen = {r["listing_id"]: json.loads(r["data"]) for r in conn.execute("SELECT * FROM amenities")}
     hist: dict[str, list[float]] = {}
-    for r in conn.execute("SELECT listing_id, price FROM price_history "
-                          "ORDER BY day, (origin = 'alert_previous') DESC, rowid"):
-        hist.setdefault(r["listing_id"], []).append(r["price"])
+    targets = merge_targets(conn)  # a survivor's history includes the rows of every listing merged into it
+    for r in conn.execute(f"SELECT listing_id, price FROM price_history ORDER BY {HISTORY_ORDER}"):
+        hist.setdefault(targets.get(r["listing_id"], r["listing_id"]), []).append(r["price"])
     rows = [dict(r) for r in conn.execute("SELECT * FROM listings")]
     live = [r for r in rows if not r.get("merged_into")]
     dups = duplicate_pairs(live, needs)
