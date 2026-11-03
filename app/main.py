@@ -42,9 +42,69 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
         return {"ok": True}
 
     # ── listings ────────────────────────────────────────────────────────────
+    def merge_groups() -> dict[str, list[str]]:
+        """Final live target id -> ids merged into it (chains resolved; members of a cycle have no target)."""
+        into = {r["id"]: r["merged_into"] for r in conn.execute(
+            "SELECT id, merged_into FROM listings WHERE merged_into IS NOT NULL AND merged_into <> ''")}
+        groups: dict[str, list[str]] = {}
+        for src, cur in into.items():
+            seen = {src}
+            while cur in into and cur not in seen:
+                seen.add(cur)
+                cur = into[cur]
+            if cur not in into:
+                groups.setdefault(cur, []).append(src)
+        return groups
+
+    def with_provenance(rows: list[dict]) -> list[dict]:
+        """Add `links` (direct and tracking, merged listings included) and `sightings` (newest first)."""
+        groups = merge_groups()
+        urls = {r["id"]: r["url"] for r in conn.execute("SELECT id, url FROM listings")}
+        by_listing: dict[str, list] = {}
+        for r in conn.execute(
+                "SELECT s.listing_id, s.link_direct, s.link_tracking, a.alert_date, a.subject "
+                "FROM sightings s JOIN alert_emails a ON a.email_id = s.email_id "
+                "ORDER BY a.alert_date DESC, s.rowid DESC"):
+            by_listing.setdefault(r["listing_id"], []).append(r)
+        for l in rows:
+            ids = [l["id"], *groups.get(l["id"], [])]
+            direct = [urls[i] for i in ids if urls.get(i)]
+            tracking: list[str] = []
+            sightings = []
+            for r in sorted((r for i in ids for r in by_listing.get(i, [])),
+                            key=lambda r: r["alert_date"] or "", reverse=True):
+                direct.append(r["link_direct"])
+                tracking.append(r["link_tracking"])
+                sightings.append({"alert_date": r["alert_date"], "subject": r["subject"]})
+            l["links"] = {"direct": list(dict.fromkeys(u for u in direct if u)),
+                          "tracking": list(dict.fromkeys(u for u in tracking if u))}
+            l["sightings"] = sightings
+        return rows
+
+    @app.post("/api/listings/{lid:path}/merge")
+    def merge_listing(lid: str, body: dict = Body(...)):
+        into = body.get("into")
+        if not isinstance(into, str) or not into:
+            raise HTTPException(400, 'se esperaba {"into": "<id del anuncio>"}')
+        if conn.execute("SELECT 1 FROM listings WHERE id=?", (lid,)).fetchone() is None:
+            raise HTTPException(404, "listing not found")
+        if conn.execute("SELECT 1 FROM listings WHERE id=?", (into,)).fetchone() is None:
+            raise HTTPException(404, "target listing not found")
+        if into == lid:
+            raise HTTPException(400, "a listing cannot be merged into itself")
+        seen, cur = {lid}, into  # walk the target's chain; reaching lid would close a cycle
+        while cur:
+            if cur in seen:
+                raise HTTPException(409, "merge would create a cycle")
+            seen.add(cur)
+            row = conn.execute("SELECT merged_into FROM listings WHERE id=?", (cur,)).fetchone()
+            cur = row["merged_into"] if row else None
+        conn.execute("UPDATE listings SET merged_into=? WHERE id=?", (into, lid))
+        conn.commit()
+        return {"ok": True, "id": lid, "merged_into": into}
     @app.get("/api/listings")
     def listings():
-        return scoring.rank(conn, needs())
+        return with_provenance(scoring.rank(conn, needs()))
 
     @app.post("/api/listings")
     def add_listing(body: dict = Body(...)):
@@ -195,12 +255,14 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
 
         buf = io.StringIO()
         w = csv.writer(buf)
-        w.writerow(["score", "excluded", "zone", "type", "price", "area_m2", "price_m2", "bedrooms", "url", "flags"])
+        w.writerow(["score", "excluded", "zone", "type", "price", "area_m2", "price_m2", "bedrooms", "url", "flags",
+                    "published_at", "price_updated_at", "found_via", "scoring_version"])
         for l in scoring.rank(conn, needs()):
             e = l["eval"]
             w.writerow([None if e["score"] is None else round(e["score"]), "; ".join(e["excluded"]), l["zone_id"],
                         l["property_type"], l["price"], l["area_m2"], e["price_m2"] and round(e["price_m2"]),
-                        l["bedrooms"], l["url"], " | ".join(e["flags"])])
+                        l["bedrooms"], l["url"], " | ".join(e["flags"]),
+                        l.get("published_at"), l.get("price_updated_at"), "", scoring.SCORING_VERSION])
         return buf.getvalue()
 
     @app.get("/")
