@@ -153,7 +153,10 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
             rules = categories.validate_rules(body["rules"], "rules")
         except ValueError as exc:
             raise HTTPException(400, str(exc))
-        categories.save_rules(rules)  # atomic: temp file + replace
+        try:
+            categories.save_rules(rules)  # atomic: temp file + replace
+        except OSError as exc:  # read-only or locked file: say so without the local path
+            raise HTTPException(500, f"the rules file could not be written ({type(exc).__name__}); nothing was saved")
         try:
             categories.recategorise_all(conn)  # FR-031: all stored emails, no re-import
         except ValueError as exc:
@@ -180,8 +183,14 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
             derive.derive_listing(conn, lid)  # refresh the relisted flag against the new mark
         if "new_build" in body:  # FR-033: a user value (origin 'user'); null clears it and the derivation decides again
             v = body["new_build"]
-            conn.execute("UPDATE listings SET new_build=?, new_build_origin=? WHERE id=?",
-                         (None, None, lid) if v is None else (int(v), "user", lid))
+            sources = json.loads(conn.execute("SELECT field_sources FROM listings WHERE id=?", (lid,)).fetchone()[0] or "{}")
+            if v is None:
+                sources.pop("new_build", None)  # drop the user label; derive re-labels what it re-derives
+            else:
+                sources["new_build"] = "manual"  # same convention as price/area/bedrooms (derive.USER_ORIGINS)
+            conn.execute("UPDATE listings SET new_build=?, new_build_origin=?, field_sources=? WHERE id=?",
+                         (None, None, json.dumps(sources, sort_keys=True), lid) if v is None
+                         else (int(v), "user", json.dumps(sources, sort_keys=True), lid))
             derive.derive_listing(conn, lid)
         conn.commit()
         return {"ok": True}
