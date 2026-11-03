@@ -40,3 +40,11 @@ behaviour). `test_same_contains_and_same_category_still_loads` fails only becaus
 app/categories.py already rejects duplicate rules ("entry 2 duplicates an earlier rule"); that dev code must be
 removed. Against the original code that guard passes. Needs a duplicate-key-detecting YAML loader (e.g. a
 SafeLoader subclass overriding construct_mapping).
+
+## Review 1, F1: absolute path in error messages
+Four tests added at the end of `tests/test_categories_hardening.py`. For invalid YAML, invalid UTF-8 bytes, a bad
+entry (missing `category`) and the `import_runs.error` column (invalid YAML), the message must contain the file
+name `alert_categories.yaml` and neither `str(tmp_path)` nor `str(tmp_path.parent)`. All four fail now because the
+message starts with the absolute path (and PyYAML marks `in "<path>"` repeat it). Fix needs the file name only in
+`where` and the PyYAML problem_mark/context_mark text stripped or rebuilt (keep line/column, e.g. from
+`exc.problem_mark.line/column` and `exc.problem`).

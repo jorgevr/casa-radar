@@ -166,3 +166,41 @@ def test_import_with_valid_rules_leaves_error_empty(conn, rules_path):
     summary = alerts.import_paths(conn, [EMAILS / IMPORT_FIXTURES[0]])
     run = conn.execute("SELECT status, error FROM import_runs WHERE run_id=?", (summary["run_id"],)).fetchone()
     assert (run["status"], run["error"]) == ("ok", None)
+
+
+# -- no absolute path in YAML / UTF-8 errors (review 1, F1) -----------------------------------------------
+def _assert_name_only(text, rules_path, tmp_path):
+    assert rules_path.name in text
+    assert str(tmp_path) not in text
+    assert str(tmp_path.parent) not in text
+
+
+def test_invalid_yaml_error_names_file_but_not_its_directory(rules_path, tmp_path):
+    rules_path.write_text("- contains: pisos\n  category: [unclosed\n", encoding="utf-8")
+    with pytest.raises(ValueError) as exc:
+        categories.load_rules()
+    assert "invalid YAML" in str(exc.value)
+    _assert_name_only(str(exc.value), rules_path, tmp_path)  # PyYAML marks embed the path too
+
+
+def test_invalid_utf8_error_names_file_but_not_its_directory(rules_path, tmp_path):
+    rules_path.write_bytes(b"- contains: pisos\n  category: fl\xff\xfeat\n")
+    with pytest.raises(ValueError) as exc:
+        categories.load_rules()
+    assert "UTF-8" in str(exc.value)
+    _assert_name_only(str(exc.value), rules_path, tmp_path)
+
+
+def test_entry_error_names_file_but_not_its_directory(rules_path, tmp_path):
+    _write(rules_path, [OK1, {"contains": "casas"}])
+    with pytest.raises(ValueError) as exc:
+        categories.load_rules()
+    _assert_name_only(str(exc.value), rules_path, tmp_path)
+
+
+def test_import_error_column_has_no_absolute_path(conn, rules_path, tmp_path):
+    rules_path.write_text("- contains: pisos\n  category: [unclosed\n", encoding="utf-8")
+    summary = alerts.import_paths(conn, [EMAILS / IMPORT_FIXTURES[0]])
+    error = conn.execute("SELECT error FROM import_runs WHERE run_id=?", (summary["run_id"],)).fetchone()["error"]
+    assert error.startswith("ValueError: ")
+    _assert_name_only(error, rules_path, tmp_path)
