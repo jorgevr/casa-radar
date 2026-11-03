@@ -22,3 +22,8 @@ node --check on the extracted script; node check of sort/date helpers (unknown l
 
 ## Reviewer checks
 Escaping of subjects/ids/flags; data-into attribute escaped; no raw data in innerHTML.
+
+## Fix loop 1 (review r1)
+1. Dates: new `parseDate` validates a real calendar date (year >= 1, month 1-12, day within the month, Gregorian leap rule) by pure arithmetic on the ISO string (no `Date`, no timezone). `fmtDate` and `dkey` use it; invalid, empty or null -> "desconocido" and sorted last in both directions. A time part is still accepted.
+2. Price-history `.catch` now has the same `open===id` guard as the success branch, and the message is fully Spanish ("No se pudo cargar el historial de precios.").
+Verified with node: 2025-01-09, with time part, 2025-13-45, 2024-02-29 (valid), 2025-02-29, 2000-02-29 (valid), 1900-02-29 (invalid), 0000-00-00, 2025-04-31, '', null, undefined, 2025-1-9; sort with invalid/null/empty mixed: asc `c,b,bad,z,n,e`, desc `b,c,bad,z,n,e` (unknowns last, stable). node --check passes.
