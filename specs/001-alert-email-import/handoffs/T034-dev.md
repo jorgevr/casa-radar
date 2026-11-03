@@ -21,3 +21,10 @@ Files: `app/alerts.py`, `app/derive.py`, `app/scoring.py` (+ `app/categories.py`
 ## Reviewer
 - derive.py new_build block (stored 'category' re-derived; other stored values kept).
 - alerts.py now categorises failed/rejected emails too.
+
+## Fix loop 1 (review T034-r1), app/categories.py only
+- `load_rules` is strict: one ValueError naming the file path for a non-UTF-8 file, a YAML syntax error, a non-list top level; and for a bad entry its 1-based position and the problem (not a mapping, or `contains`/`category` missing, empty or not a string; typo'd keys fall under "missing"). Missing, empty, comment-only file and `[]` are still no rules. Valid files unchanged (rules returned as `{contains, category}`).
+- `categorise(text, rules=None)`: optional pre-loaded rules; otherwise loads the file, so the ValueError surfaces.
+- `recategorise_all` loads and validates rules once, before opening the transaction (DB untouched on error), and passes them to `categorise` for each email (was one file read per email; same behaviour).
+- Note: `categorise` now loads the file even for empty text, so a malformed file raises there too.
+- Gates: compileall OK; pytest -m "not slow" --ignore=tests/test_categories_api.py 282 passed; anonymise check rc=0; forbidden-path diff clean; requirements.txt diff empty.
