@@ -355,9 +355,8 @@ def rank(conn, needs: dict) -> list[dict]:
     ctx = build_context(conn, needs)
     amen = {r["listing_id"]: json.loads(r["data"]) for r in conn.execute("SELECT * FROM amenities")}
     hist: dict[str, list[float]] = {}
-    targets = merge_targets(conn)  # a survivor's history includes the rows of every listing merged into it
     for r in conn.execute(f"SELECT listing_id, price FROM price_history ORDER BY {HISTORY_ORDER}"):
-        hist.setdefault(targets.get(r["listing_id"], r["listing_id"]), []).append(r["price"])
+        hist.setdefault(r["listing_id"], []).append(r["price"])
     rows = [dict(r) for r in conn.execute("SELECT * FROM listings")]
     live = [r for r in rows if not r.get("merged_into")]
     dups = duplicate_pairs(live, needs)

@@ -46,16 +46,9 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
     # ── listings ────────────────────────────────────────────────────────────
     def merge_groups() -> dict[str, list[str]]:
         """Final live target id -> ids merged into it (chains resolved; members of a cycle have no target)."""
-        into = {r["id"]: r["merged_into"] for r in conn.execute(
-            "SELECT id, merged_into FROM listings WHERE merged_into IS NOT NULL AND merged_into <> ''")}
         groups: dict[str, list[str]] = {}
-        for src, cur in into.items():
-            seen = {src}
-            while cur in into and cur not in seen:
-                seen.add(cur)
-                cur = into[cur]
-            if cur not in into:
-                groups.setdefault(cur, []).append(src)
+        for src, target in scoring.merge_targets(conn).items():
+            groups.setdefault(target, []).append(src)
         return groups
 
     def with_provenance(rows: list[dict]) -> list[dict]:
