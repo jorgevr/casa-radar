@@ -170,6 +170,8 @@ def evaluate(l: dict, ctx: dict, needs: dict, amen_data: dict | None, history: l
             flags.append("sin referencia de precio para esta zona")
 
     # affordability
+    if l.get("new_build") and l.get("new_build_origin") == "category":  # FR-033: only a flag to confirm, the costs use it
+        flags.append("obra nueva según la categoría de la alerta, confirma")
     sim = None
     savings = _effective_savings(f)
     if l["price"] and savings is not None and f.get("tin_pct") is not None:
@@ -288,6 +290,41 @@ def _stored_flags(raw) -> list[str]:
     return [f for f in val if isinstance(f, str)] if isinstance(val, list) else []
 
 
+def _category_flags(raw_categories, conflict_rules: list[str]) -> list[str]:
+    """'Found via' flags from listings.categories (JSON list) and the rules behind any conflict (FR-031, FR-032)."""
+    try:
+        cats = json.loads(raw_categories) if raw_categories else []
+    except (TypeError, ValueError):
+        cats = []
+    cats = [c for c in cats if isinstance(c, str)] if isinstance(cats, list) else []
+    flags = []
+    known = [c for c in cats if c != "unknown"]
+    if known:
+        flags.append("encontrado vía: " + ", ".join(known))
+    if "unknown" in cats:
+        flags.append("encontrado vía: búsqueda desconocida")
+    if conflict_rules:
+        flags.append("reglas de categoría en conflicto: " + ", ".join(conflict_rules))
+    return flags
+
+
+def _conflict_rules(conn) -> dict[str, list[str]]:
+    """listing id -> rules (file order, no repeats) of the emails whose rules matched but disagreed."""
+    out: dict[str, list[str]] = {}
+    for r in conn.execute("SELECT s.listing_id, e.category_rules_matched FROM sightings s "
+                          "JOIN alert_emails e ON e.email_id = s.email_id "
+                          "WHERE e.category = 'unknown' AND e.category_rules_matched IS NOT NULL "
+                          "ORDER BY s.seen_at, s.email_id"):
+        try:
+            rules = json.loads(r["category_rules_matched"])
+        except (TypeError, ValueError):
+            continue
+        for rule in rules if isinstance(rules, list) else []:
+            if isinstance(rule, str) and rule not in out.setdefault(r["listing_id"], []):
+                out[r["listing_id"]].append(rule)
+    return out
+
+
 def rank(conn, needs: dict) -> list[dict]:
     ctx = build_context(conn, needs)
     amen = {r["listing_id"]: json.loads(r["data"]) for r in conn.execute("SELECT * FROM amenities")}
@@ -310,13 +347,14 @@ def rank(conn, needs: dict) -> list[dict]:
             cur = into[cur]
         if cur not in into:  # final target is a live listing (or absent); in a cycle every member is merged
             merged_urls.setdefault(cur, []).append(r["url"])
+    conflicts = _conflict_rules(conn)
     out = []
     for l in live:
         l.pop("raw", None)
         l["eval"] = evaluate(l, ctx, needs, amen.get(l["id"]), hist.get(l["id"], []))
         flags = l["eval"]["flags"]
         flags += [f"posible duplicado de {o}" for o in dups.get(l["id"], [])]
-        for f in _stored_flags(l.get("alert_flags")):
+        for f in _stored_flags(l.get("alert_flags")) + _category_flags(l.get("categories"), conflicts.get(l["id"], [])):
             if f not in flags:
                 flags.append(f)
         if l.get("availability") == "gone":  # a mark, not a hard filter (FR-019)

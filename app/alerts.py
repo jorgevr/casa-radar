@@ -13,7 +13,7 @@ from email import policy
 from email.utils import parseaddr
 from pathlib import Path
 
-from . import derive
+from . import categories, derive
 from .db import dumps
 from .providers import idealista_alert as reader
 
@@ -127,7 +127,9 @@ def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = No
                 out = Outcome(email_id, "failed", REASON_NO_DATE)
             else:
                 out = Outcome(email_id, "imported", notices=list(result.notices))
-        row.update(outcome=out.outcome, reason=out.reason)
+        category, rules_matched = categories.categorise(categories.email_text(row.get("search_name"), subject))
+        row.update(outcome=out.outcome, reason=out.reason, category=category,
+                   category_rules_matched=json.dumps(rules_matched, ensure_ascii=False))
         conn.execute(f"INSERT INTO alert_emails({','.join(row)}) VALUES({','.join('?' * len(row))})",
                      list(row.values()))
 
@@ -137,7 +139,7 @@ def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = No
             out.listing_id = f"idealista:{block.listing_code}"
             before = conn.execute("SELECT * FROM listings WHERE id=?", (out.listing_id,)).fetchone()
             sighting = {"email_id": email_id, "listing_id": out.listing_id, "alert_type": result.alert_type,
-                        "seen_at": alert_date, "unrecognised": dumps(result.notices),
+                        "seen_at": alert_date, "unrecognised": dumps(result.notices), "category": category,
                         **{f: getattr(block, f) for f in SIGHTING_FIELDS}}
             conn.execute(f"INSERT INTO sightings({','.join(sighting)}) VALUES({','.join('?' * len(sighting))})",
                          list(sighting.values()))
