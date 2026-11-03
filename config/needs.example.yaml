@@ -63,3 +63,7 @@ scoring:                       # weights of the final 0–100 opportunity score
     amenities: 2
     fit: 1            # preferred zone, extra bedrooms, garden, plot
     momentum: 1       # price drops
+
+duplicates:                    # possible-duplicate flag (research R15): same zone, type and bedrooms
+  area_pct_max: 0.03           # max |a-b|/max(a,b) of area_m2 (3 %, inclusive)
+  price_pct_max: 0.05          # max |a-b|/max(a,b) of price (5 %, inclusive)

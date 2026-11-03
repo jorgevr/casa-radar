@@ -14,6 +14,15 @@ from .db import indicators_by_zone
 from .listings import type_group
 from .util import clamp, median
 
+# Research R14: any scoring change bumps this version (2 = unknown-field flags, development handling,
+# duplicate flags). Not yet part of rank() output (T032).
+SCORING_VERSION = 2
+
+# Research R15 defaults for possible-duplicate detection, used only when needs has no `duplicates` section.
+# Fractions of max(a, b); boundaries inclusive. Normal place for them: needs `duplicates` (Articles II/VIII).
+DUPLICATE_DEFAULTS = {"area_pct_max": 0.03, "price_pct_max": 0.05}
+# Property types that mean "unknown / unrecognised" (listings.norm_type maps missing and unmapped text to "otro").
+UNKNOWN_TYPES = (None, "", "otro")
 
 # ── neighbourhood ────────────────────────────────────────────────────────────
 def _percentiles(values: dict[str, float]) -> dict[str, float]:
@@ -117,7 +126,8 @@ def _price_benchmark(l, ind_zone: dict, medians: dict, needs: dict):
 
 def build_context(conn, needs: dict) -> dict:
     ind = indicators_by_zone(conn)
-    rows = [dict(r) for r in conn.execute("SELECT * FROM listings")]
+    # merged listings are the same property as their target: they must not count twice in medians
+    rows = [dict(r) for r in conn.execute("SELECT * FROM listings WHERE merged_into IS NULL OR merged_into = ''")]
     by_zone_grp: dict[tuple, list] = {}
     for r in rows:
         if r["price"] and r["area_m2"]:
@@ -242,22 +252,81 @@ def evaluate(l: dict, ctx: dict, needs: dict, amen_data: dict | None, history: l
     }
 
 
+def _rel_diff(a: float, b: float) -> float:
+    return abs(a - b) / max(a, b)
+
+
+def duplicate_pairs(rows: list[dict], needs: dict) -> dict[str, list[str]]:
+    """R15: listing id -> ids of possible duplicates. Same zone, type and bedrooms; relative area and price
+    differences |a-b|/max(a,b) within the configured limits (inclusive). Unknown values, no zone or
+    development listings never match."""
+    cfg = {**DUPLICATE_DEFAULTS, **(needs.get("duplicates") or {})}
+    groups: dict[tuple, list[dict]] = {}
+    for r in rows:
+        if (r.get("development") or not r["zone_id"] or r["property_type"] in UNKNOWN_TYPES or not r["area_m2"] or not r["price"] or r["bedrooms"] is None):
+            continue
+        groups.setdefault((r["zone_id"], r["property_type"], r["bedrooms"]), []).append(r)
+    out: dict[str, list[str]] = {}
+    for grp in groups.values():
+        for i, a in enumerate(grp):
+            for b in grp[i + 1:]:
+                if (_rel_diff(a["area_m2"], b["area_m2"]) <= cfg["area_pct_max"]
+                        and _rel_diff(a["price"], b["price"]) <= cfg["price_pct_max"]):
+                    out.setdefault(a["id"], []).append(b["id"])
+                    out.setdefault(b["id"], []).append(a["id"])
+    return {k: sorted(v) for k, v in out.items()}
+
+
+def _stored_flags(raw) -> list[str]:
+    """listings.alert_flags (JSON list written by derivation); anything unreadable counts as no flags."""
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError):
+        return []
+    return [f for f in val if isinstance(f, str)] if isinstance(val, list) else []
+
+
 def rank(conn, needs: dict) -> list[dict]:
     ctx = build_context(conn, needs)
     amen = {r["listing_id"]: json.loads(r["data"]) for r in conn.execute("SELECT * FROM amenities")}
     hist: dict[str, list[float]] = {}
-    for r in conn.execute("SELECT listing_id, price FROM price_history ORDER BY day, rowid"):
+    for r in conn.execute("SELECT listing_id, price FROM price_history "
+                          "ORDER BY day, (origin = 'alert_previous') DESC, rowid"):
         hist.setdefault(r["listing_id"], []).append(r["price"])
+    rows = [dict(r) for r in conn.execute("SELECT * FROM listings")]
+    live = [r for r in rows if not r.get("merged_into")]
+    dups = duplicate_pairs(live, needs)
+    # merge chains (A into B, B into C) resolve to the final target; a cycle ends the walk without a target
+    into = {r["id"]: r["merged_into"] for r in rows if r.get("merged_into")}
+    merged_urls: dict[str, list] = {}
+    for r in rows:
+        if not r.get("merged_into"):
+            continue
+        seen, cur = {r["id"]}, r["merged_into"]
+        while cur in into and cur not in seen:
+            seen.add(cur)
+            cur = into[cur]
+        if cur not in into:  # final target is a live listing (or absent); in a cycle every member is merged
+            merged_urls.setdefault(cur, []).append(r["url"])
     out = []
-    for r in conn.execute("SELECT * FROM listings"):
-        l = dict(r)
+    for l in live:
         l.pop("raw", None)
         l["eval"] = evaluate(l, ctx, needs, amen.get(l["id"]), hist.get(l["id"], []))
+        flags = l["eval"]["flags"]
+        flags += [f"posible duplicado de {o}" for o in dups.get(l["id"], [])]
+        for f in _stored_flags(l.get("alert_flags")):
+            if f not in flags:
+                flags.append(f)
+        if l.get("availability") == "gone":  # a mark, not a hard filter (FR-019)
+            flags.insert(0, "ya no disponible")
+        l["merged_links"] = merged_urls.get(l["id"], [])
         l["days_seen"] = None
         out.append(l)
-    out.sort(key=lambda x: (bool(x["eval"]["excluded"]), -(x["eval"]["score"] or -1)))
+    out.sort(key=lambda x: (bool(x["eval"]["excluded"]), x.get("availability") == "gone",
+                            -(x["eval"]["score"] or -1)))
     return out
-
 
 def zone_table(conn, needs: dict) -> list[dict]:
     ctx = build_context(conn, needs)

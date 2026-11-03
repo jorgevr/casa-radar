@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 
 from .db import dumps, ensure_zone, today
 from .util import slug, to_bool, to_float, to_money
@@ -72,22 +73,39 @@ def normalise(d: dict) -> dict:
     }
 
 
+_SOURCE_ORIGIN = {"idealista": "idealista_api"}  # field_sources value for each provider source
+_TRACKED = ("url", "title", "property_type", "price", "area_m2", "bedrooms", "bathrooms", "plot_m2", "garden",
+            "new_build", "lat", "lon", "municipality", "district", "neighborhood")
+
+
+def _field_sources(previous_json, n: dict, source: str) -> str:
+    """Origin of each non-null field this write sets; a field written null loses its origin (lat/lon keep theirs)."""
+    sources = json.loads(previous_json) if previous_json else {}
+    origin = _SOURCE_ORIGIN.get(source, source)
+    for col in _TRACKED:
+        if n[col] is not None:
+            sources[col] = origin
+        elif col not in ("lat", "lon"):
+            sources.pop(col, None)
+    return json.dumps(sources, sort_keys=True)
+
+
 def upsert_listing(conn, raw: dict, source: str, needs: dict) -> str:
     n = normalise(raw)
     lid = listing_id(source, n["external_id"], n["url"] or n["title"])
     zone_id, zname, level = zone_for(n["municipality"], n["district"], needs)
     ensure_zone(conn, zone_id, zname, n["municipality"], level)
     day = today()
-    existing = conn.execute("SELECT price FROM listings WHERE id=?", (lid,)).fetchone()
+    existing = conn.execute("SELECT price, field_sources FROM listings WHERE id=?", (lid,)).fetchone()
     if existing is None:
         conn.execute(
             "INSERT INTO listings(id,source,url,title,property_type,price,area_m2,bedrooms,bathrooms,"
-            "plot_m2,garden,new_build,lat,lon,municipality,district,neighborhood,zone_id,first_seen,last_seen,raw) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "plot_m2,garden,new_build,lat,lon,municipality,district,neighborhood,zone_id,first_seen,last_seen,raw,"
+            "field_sources) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (lid, source, n["url"], n["title"], n["property_type"], n["price"], n["area_m2"], n["bedrooms"],
              n["bathrooms"], n["plot_m2"], None if n["garden"] is None else int(n["garden"]),
              None if n["new_build"] is None else int(n["new_build"]), n["lat"], n["lon"], n["municipality"],
-             n["district"], n["neighborhood"], zone_id, day, day, dumps(raw)),
+             n["district"], n["neighborhood"], zone_id, day, day, dumps(raw), _field_sources(None, n, source)),
         )
         if n["price"]:
             conn.execute("INSERT INTO price_history(listing_id,day,price) VALUES(?,?,?)", (lid, day, n["price"]))
@@ -95,11 +113,12 @@ def upsert_listing(conn, raw: dict, source: str, needs: dict) -> str:
         conn.execute(
             "UPDATE listings SET url=?,title=?,property_type=?,price=?,area_m2=?,bedrooms=?,bathrooms=?,plot_m2=?,"
             "garden=?,new_build=?,lat=COALESCE(?,lat),lon=COALESCE(?,lon),municipality=?,district=?,neighborhood=?,"
-            "zone_id=?,last_seen=?,raw=? WHERE id=?",
+            "zone_id=?,last_seen=?,raw=?,field_sources=? WHERE id=?",
             (n["url"], n["title"], n["property_type"], n["price"], n["area_m2"], n["bedrooms"], n["bathrooms"],
              n["plot_m2"], None if n["garden"] is None else int(n["garden"]),
              None if n["new_build"] is None else int(n["new_build"]), n["lat"], n["lon"], n["municipality"],
-             n["district"], n["neighborhood"], zone_id, day, dumps(raw), lid),
+             n["district"], n["neighborhood"], zone_id, day, dumps(raw),
+             _field_sources(existing["field_sources"], n, source), lid),
         )
         if n["price"] and n["price"] != existing["price"]:
             conn.execute("INSERT INTO price_history(listing_id,day,price) VALUES(?,?,?)", (lid, day, n["price"]))
