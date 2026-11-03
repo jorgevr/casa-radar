@@ -319,10 +319,13 @@ def rank(conn, needs: dict) -> list[dict]:
         for f in _stored_flags(l.get("alert_flags")):
             if f not in flags:
                 flags.append(f)
+        if l.get("availability") == "gone":  # a mark, not a hard filter (FR-019)
+            flags.insert(0, "ya no disponible")
         l["merged_links"] = merged_urls.get(l["id"], [])
         l["days_seen"] = None
         out.append(l)
-    out.sort(key=lambda x: (bool(x["eval"]["excluded"]), -(x["eval"]["score"] or -1)))
+    out.sort(key=lambda x: (bool(x["eval"]["excluded"]), x.get("availability") == "gone",
+                            -(x["eval"]["score"] or -1)))
     return out
 
 def zone_table(conn, needs: dict) -> list[dict]:
