@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 from fastapi import Body, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from typing import Any
@@ -269,6 +269,35 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
                 paths[-1].write_bytes(raw)
             summary = alerts.import_paths(conn, paths, kind="file_ui")
         return summary
+
+    @app.get("/api/alerts/emails")
+    def list_alert_emails(outcome: str | None = None):
+        if outcome is not None and outcome not in ("failed", "rejected", "imported"):
+            raise HTTPException(400, "outcome must be failed, rejected or imported")
+        where, args = ("WHERE outcome=?", (outcome,)) if outcome else ("", ())
+        return [dict(r) for r in conn.execute(
+            "SELECT email_id, alert_date, subject, reason, outcome, reader_version FROM alert_emails "
+            f"{where} ORDER BY alert_date IS NULL, alert_date DESC, rowid DESC", args)]
+
+    @app.get("/api/alerts/emails/{email_id:path}/raw")
+    def alert_email_raw(email_id: str):
+        row = conn.execute("SELECT raw FROM alert_emails WHERE email_id=?", (email_id,)).fetchone()
+        if row is None or row["raw"] is None:
+            raise HTTPException(404, "email not found")
+        # The stored body is the portal's HTML: never let the browser render or execute it.
+        return Response(bytes(row["raw"]), media_type="application/octet-stream", headers={
+            "X-Content-Type-Options": "nosniff", "Content-Disposition": 'attachment; filename="email.eml"',
+            "Content-Security-Policy": "default-src 'none'; sandbox"})
+
+    @app.post("/api/alerts/reprocess")
+    async def reprocess_alerts(request: Request):
+        try:
+            scope = (await request.json()).get("scope")
+        except (ValueError, AttributeError):
+            scope = None
+        if scope not in alerts.REPROCESS_SCOPES:
+            raise HTTPException(400, 'se esperaba {"scope": "failed" | "all"}')
+        return alerts.reprocess(conn, scope)
 
     @app.get("/api/runs")
     def list_runs(limit: int = Query(20, ge=1, le=500)):

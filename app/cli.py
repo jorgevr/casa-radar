@@ -4,6 +4,7 @@
   python -m app.cli import-listings FILE.csv
   python -m app.cli import-indicators FILE.csv
   python -m app.cli import-emails PATH [PATH ...]   # .eml / .mbox files or folders
+  python -m app.cli reprocess-emails [--failed | --all]   # re-read stored emails with the current reader
   python -m app.cli serpavi --file SERPAVI.xlsx [--all-madrid-region]
   python -m app.cli categories            # print category rules and each stored search name's category
   python -m app.cli mcp-schema           # print idealista-mcp tool schemas
@@ -65,6 +66,10 @@ def main(argv=None):
     for name in ("import-listings", "import-indicators"):
         c = sub.add_parser(name); c.add_argument("file")
     ie = sub.add_parser("import-emails"); ie.add_argument("paths", nargs="+", metavar="PATH")
+    rp = sub.add_parser("reprocess-emails")
+    grp = rp.add_mutually_exclusive_group()
+    grp.add_argument("--failed", action="store_true", help="failed emails and ones an older reader rejected (default)")
+    grp.add_argument("--all", action="store_true", help="every stored email")
     sp = sub.add_parser("serpavi"); sp.add_argument("--file", required=True); sp.add_argument("--all-madrid-region", action="store_true")
     sub.add_parser("categories")
     sub.add_parser("mcp-schema")
@@ -90,6 +95,13 @@ def main(argv=None):
         from . import alerts
         summary = alerts.import_paths(conn, [Path(p) for p in args.paths])
         # Subjects/reasons are email text: a console that cannot encode them must not lose the summary.
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(errors="backslashreplace")
+        print(*format_import_summary(summary), sep="\n")
+        return 1 if summary["n_failed"] > 0 else 0
+    elif args.cmd == "reprocess-emails":
+        from . import alerts
+        summary = alerts.reprocess(conn, "all" if args.all else "failed")
         if hasattr(sys.stdout, "reconfigure"):
             sys.stdout.reconfigure(errors="backslashreplace")
         print(*format_import_summary(summary), sep="\n")

@@ -84,6 +84,53 @@ def _problem_reason(problems) -> str:
     return "; ".join(f"{p.where}: se esperaba {p.expected}, encontrado {p.found}" for p in problems)
 
 
+def _classify(msg, email_id: str, alert_date: str | None):
+    """Decide what a stored message is: (outcome, read result or None, forwarded flag, sender, subject)."""
+    sender = parseaddr(str(msg.get("From", "")))[1].lower()
+    subject = str(msg.get("Subject", ""))
+    types = {part.get_content_type() for part in msg.walk()}
+    forwarded = bool(FORWARD_RE.match(subject)) or "message/rfc822" in types
+    result = None
+    if forwarded:
+        out = Outcome(email_id, "failed", REASON_FORWARD)
+    elif "text/plain" in types and sender in PORTAL_SENDERS:
+        out = Outcome(email_id, "failed", REASON_TEXT_PART)
+    else:
+        result = reader.read(msg)
+        if result.alert_type == "not_alert":
+            out = Outcome(email_id, "rejected", REASON_NOT_ALERT)
+        elif result.alert_type == "unsupported":
+            out = Outcome(email_id, "rejected", REASON_UNSUPPORTED)
+        elif result.problems or len(result.listings) != 1:
+            out = Outcome(email_id, "failed", _problem_reason(result.problems) or
+                          f"anuncios en el email: se esperaba 1, encontrado {len(result.listings)}")
+        elif alert_date is None:
+            out = Outcome(email_id, "failed", REASON_NO_DATE)
+        else:
+            out = Outcome(email_id, "imported", notices=list(result.notices))
+    return out, result, forwarded, sender, subject
+
+
+def _record_sighting(conn, out: Outcome, result, alert_date: str, category: str) -> bool:
+    """Insert the sighting of an imported email and re-derive its listing; return whether the price changed."""
+    block = result.listings[0]
+    out.listing_id = f"idealista:{block.listing_code}"
+    before = conn.execute("SELECT * FROM listings WHERE id=?", (out.listing_id,)).fetchone()
+    sighting = {"email_id": out.email_id, "listing_id": out.listing_id, "alert_type": result.alert_type,
+                "seen_at": alert_date, "unrecognised": dumps(result.notices), "category": category,
+                **{f: getattr(block, f) for f in SIGHTING_FIELDS}}
+    conn.execute(f"INSERT INTO sightings({','.join(sighting)}) VALUES({','.join('?' * len(sighting))})",
+                 list(sighting.values()))
+    derive.derive_listing(conn, out.listing_id)
+    after = conn.execute("SELECT * FROM listings WHERE id=?", (out.listing_id,)).fetchone()
+    if before is None:
+        out.listing_change = "new"
+    elif tuple(before) != tuple(after):
+        out.listing_change = "updated"
+        return before["price"] != after["price"]
+    return False
+
+
 def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = None,
                     mailbox_id: str | None = None, run_id: int, rules: list[dict] | None = None) -> Outcome:
     msg = email.message_from_bytes(raw, policy=policy.default)
@@ -99,34 +146,14 @@ def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = No
             _count(conn, run_id, out, False)
             return out
 
-        sender = parseaddr(str(msg.get("From", "")))[1].lower()
-        subject = str(msg.get("Subject", ""))
         alert_date = _alert_date(msg)
-        types = {part.get_content_type() for part in msg.walk()}
-        forwarded = bool(FORWARD_RE.match(subject)) or "message/rfc822" in types
+        out, result, forwarded, sender, subject = _classify(msg, email_id, alert_date)
         row = {"email_id": email_id, "mailbox_id": mailbox_id, "content_hash": content_hash, "origin": origin,
                "file_name": file_name, "sender": sender, "subject": subject, "alert_date": alert_date,
                "forwarded": int(forwarded), "reader_version": reader.READER_VERSION, "raw": raw,
                "first_run_id": run_id, "last_run_id": run_id}
-        result = None
-        if forwarded:
-            out = Outcome(email_id, "failed", REASON_FORWARD)
-        elif "text/plain" in types and sender in PORTAL_SENDERS:
-            out = Outcome(email_id, "failed", REASON_TEXT_PART)
-        else:
-            result = reader.read(msg)
+        if result is not None:
             row.update(alert_type=result.alert_type, search_name=result.search_name)
-            if result.alert_type == "not_alert":
-                out = Outcome(email_id, "rejected", REASON_NOT_ALERT)
-            elif result.alert_type == "unsupported":
-                out = Outcome(email_id, "rejected", REASON_UNSUPPORTED)
-            elif result.problems or len(result.listings) != 1:
-                out = Outcome(email_id, "failed", _problem_reason(result.problems) or
-                              f"anuncios en el email: se esperaba 1, encontrado {len(result.listings)}")
-            elif alert_date is None:
-                out = Outcome(email_id, "failed", REASON_NO_DATE)
-            else:
-                out = Outcome(email_id, "imported", notices=list(result.notices))
         if rules is None:  # caller did not load rules: a malformed file must not lose the email
             try:
                 rules = categories.load_rules()
@@ -141,21 +168,7 @@ def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = No
 
         price_changed = False
         if out.outcome == "imported":
-            block = result.listings[0]
-            out.listing_id = f"idealista:{block.listing_code}"
-            before = conn.execute("SELECT * FROM listings WHERE id=?", (out.listing_id,)).fetchone()
-            sighting = {"email_id": email_id, "listing_id": out.listing_id, "alert_type": result.alert_type,
-                        "seen_at": alert_date, "unrecognised": dumps(result.notices), "category": category,
-                        **{f: getattr(block, f) for f in SIGHTING_FIELDS}}
-            conn.execute(f"INSERT INTO sightings({','.join(sighting)}) VALUES({','.join('?' * len(sighting))})",
-                         list(sighting.values()))
-            derive.derive_listing(conn, out.listing_id)
-            after = conn.execute("SELECT * FROM listings WHERE id=?", (out.listing_id,)).fetchone()
-            if before is None:
-                out.listing_change = "new"
-            elif tuple(before) != tuple(after):
-                out.listing_change = "updated"
-                price_changed = before["price"] != after["price"]
+            price_changed = _record_sighting(conn, out, result, alert_date, category)
         _count(conn, run_id, out, price_changed)
     return out
 
@@ -236,6 +249,68 @@ def import_paths(conn, paths, kind: str = "file_cli") -> dict:
             row = conn.execute("SELECT subject, alert_date FROM alert_emails WHERE email_id=?",
                                (out.email_id,)).fetchone()
             ref = {"email_id": out.email_id, "alert_date": row["alert_date"], "subject": row["subject"]}
+            if out.outcome in ("rejected", "failed"):
+                problems.append({**ref, "outcome": out.outcome, "reason": out.reason})
+            notices += [{**ref, "text": text} for text in out.notices]
+    except Exception as exc:
+        finish_run(conn, run_id, "failed", type(exc).__name__)
+        raise
+    finish_run(conn, run_id, "ok", rules_error)
+    summary = dict(conn.execute("SELECT * FROM import_runs WHERE run_id=?", (run_id,)).fetchone())
+    summary.pop("notes", None)
+    return {**summary, "problems": problems, "notices": notices}
+
+
+REPROCESS_SCOPES = ("failed", "all")
+
+
+def reprocess(conn, scope: str = "failed") -> dict:
+    """Re-read stored raw emails with the current reader (T044, US4-3). Never touches raw or content_hash.
+
+    scope "failed": emails that failed or were rejected by an older reader (reader_version older than the
+    current one: a current-version failure would only fail again); "all": every stored email. Each email is one transaction: its sightings are replaced and the
+    listings it touched (before or after) are re-derived, or nothing changes. An email that no longer reads
+    keeps the listing earlier sightings made (nothing is deleted or blanked, FR-009/FR-011)."""
+    if scope not in REPROCESS_SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(REPROCESS_SCOPES)}, found {scope!r}")
+    run_id = start_run(conn, "reprocess")
+    problems: list[dict] = []
+    notices: list[dict] = []
+    try:
+        try:
+            rules, rules_error = categories.load_rules(), None
+        except ValueError as exc:
+            rules, rules_error = [], f"ValueError: {exc}"
+        version = reader.READER_VERSION
+        where = ("" if scope == "all" else
+                 " WHERE outcome IN ('failed','rejected') AND (reader_version IS NULL OR reader_version < ?)")
+        ids = [r["email_id"] for r in conn.execute(
+            "SELECT email_id FROM alert_emails" + where + " ORDER BY alert_date IS NULL, alert_date, rowid",
+            () if scope == "all" else (version,))]
+        for email_id in ids:
+            with conn:
+                row = conn.execute("SELECT raw FROM alert_emails WHERE email_id=?", (email_id,)).fetchone()
+                msg = email.message_from_bytes(row["raw"], policy=policy.default)
+                alert_date = _alert_date(msg)
+                out, result, _, _, subject = _classify(msg, email_id, alert_date)
+                search_name = result.search_name if result is not None else None
+                category, matched = categories.categorise(categories.email_text(search_name, subject), rules)
+                touched = {r["listing_id"] for r in conn.execute(
+                    "SELECT listing_id FROM sightings WHERE email_id=?", (email_id,))}
+                conn.execute("DELETE FROM sightings WHERE email_id=?", (email_id,))
+                conn.execute(
+                    "UPDATE alert_emails SET outcome=?, reason=?, reader_version=?, alert_type=?, search_name=?, "
+                    "alert_date=?, category=?, category_rules_matched=?, last_run_id=? WHERE email_id=?",
+                    (out.outcome, out.reason, version, result.alert_type if result is not None else None,
+                     search_name, alert_date, category, json.dumps(matched, ensure_ascii=False), run_id, email_id))
+                price_changed = False
+                if out.outcome == "imported":
+                    price_changed = _record_sighting(conn, out, result, alert_date, category)
+                    touched.discard(out.listing_id)
+                for listing_id in sorted(touched):
+                    derive.derive_listing(conn, listing_id)
+                _count(conn, run_id, out, price_changed)
+            ref = {"email_id": email_id, "alert_date": alert_date, "subject": subject}
             if out.outcome in ("rejected", "failed"):
                 problems.append({**ref, "outcome": out.outcome, "reason": out.reason})
             notices += [{**ref, "text": text} for text in out.notices]
