@@ -267,7 +267,7 @@ REPROCESS_SCOPES = ("failed", "all")
 def reprocess(conn, scope: str = "failed") -> dict:
     """Re-read stored raw emails with the current reader (T044, US4-3). Never touches raw or content_hash.
 
-    scope "failed": emails that failed or were rejected by an older reader (reader_version older than the
+    scope "failed": emails that failed or were rejected by an older reader (reader_version different from the
     current one: a current-version failure would only fail again); "all": every stored email. Each email is one transaction: its sightings are replaced and the
     listings it touched (before or after) are re-derived, or nothing changes. An email that no longer reads
     keeps the listing earlier sightings made (nothing is deleted or blanked, FR-009/FR-011)."""
@@ -279,42 +279,54 @@ def reprocess(conn, scope: str = "failed") -> dict:
     try:
         try:
             rules, rules_error = categories.load_rules(), None
-        except ValueError as exc:
-            rules, rules_error = [], f"ValueError: {exc}"
+        except ValueError as exc:  # keep each email's stored category instead of overwriting it with "unknown"
+            rules, rules_error = None, f"ValueError: {exc}"
         version = reader.READER_VERSION
         where = ("" if scope == "all" else
-                 " WHERE outcome IN ('failed','rejected') AND (reader_version IS NULL OR reader_version < ?)")
+                 " WHERE outcome IN ('failed','rejected') AND (reader_version IS NULL OR reader_version != ?)")
         ids = [r["email_id"] for r in conn.execute(
             "SELECT email_id FROM alert_emails" + where + " ORDER BY alert_date IS NULL, alert_date, rowid",
             () if scope == "all" else (version,))]
         for email_id in ids:
-            with conn:
-                row = conn.execute("SELECT raw FROM alert_emails WHERE email_id=?", (email_id,)).fetchone()
-                msg = email.message_from_bytes(row["raw"], policy=policy.default)
-                alert_date = _alert_date(msg)
-                out, result, _, _, subject = _classify(msg, email_id, alert_date)
-                search_name = result.search_name if result is not None else None
-                category, matched = categories.categorise(categories.email_text(search_name, subject), rules)
-                touched = {r["listing_id"] for r in conn.execute(
-                    "SELECT listing_id FROM sightings WHERE email_id=?", (email_id,))}
-                conn.execute("DELETE FROM sightings WHERE email_id=?", (email_id,))
-                conn.execute(
-                    "UPDATE alert_emails SET outcome=?, reason=?, reader_version=?, alert_type=?, search_name=?, "
-                    "alert_date=?, category=?, category_rules_matched=?, last_run_id=? WHERE email_id=?",
-                    (out.outcome, out.reason, version, result.alert_type if result is not None else None,
-                     search_name, alert_date, category, json.dumps(matched, ensure_ascii=False), run_id, email_id))
-                price_changed = False
-                if out.outcome == "imported":
-                    price_changed = _record_sighting(conn, out, result, alert_date, category)
-                    touched.discard(out.listing_id)
-                for listing_id in sorted(touched):
-                    derive.derive_listing(conn, listing_id)
-                _count(conn, run_id, out, price_changed)
+            try:
+                with conn:
+                    row = conn.execute("SELECT raw, category, category_rules_matched FROM alert_emails "
+                                       "WHERE email_id=?", (email_id,)).fetchone()
+                    msg = email.message_from_bytes(row["raw"], policy=policy.default)
+                    alert_date = _alert_date(msg)
+                    out, result, _, _, subject = _classify(msg, email_id, alert_date)
+                    search_name = result.search_name if result is not None else None
+                    if rules is None:
+                        category, matched = row["category"], json.loads(row["category_rules_matched"] or "[]")
+                    else:
+                        category, matched = categories.categorise(categories.email_text(search_name, subject), rules)
+                    touched = {r["listing_id"] for r in conn.execute(
+                        "SELECT listing_id FROM sightings WHERE email_id=?", (email_id,))}
+                    conn.execute("DELETE FROM sightings WHERE email_id=?", (email_id,))
+                    conn.execute(
+                        "UPDATE alert_emails SET outcome=?, reason=?, reader_version=?, alert_type=?, search_name=?, "
+                        "alert_date=?, category=?, category_rules_matched=?, last_run_id=? WHERE email_id=?",
+                        (out.outcome, out.reason, version, result.alert_type if result is not None else None,
+                         search_name, alert_date, category, json.dumps(matched, ensure_ascii=False), run_id,
+                         email_id))
+                    price_changed = False
+                    if out.outcome == "imported":
+                        price_changed = _record_sighting(conn, out, result, alert_date, category)
+                        touched.discard(out.listing_id)
+                    for listing_id in sorted(touched):
+                        derive.derive_listing(conn, listing_id)
+                    _count(conn, run_id, out, price_changed)
+            except Exception as exc:  # this email's transaction is rolled back; keep going with the others
+                out = Outcome(email_id, "failed", type(exc).__name__)  # class name only: no message, no paths
+                stored = conn.execute("SELECT subject, alert_date FROM alert_emails WHERE email_id=?",
+                                      (email_id,)).fetchone()
+                alert_date, subject = (stored["alert_date"], stored["subject"]) if stored else (None, None)
+                with conn:
+                    _count(conn, run_id, out, False)
             ref = {"email_id": email_id, "alert_date": alert_date, "subject": subject}
             if out.outcome in ("rejected", "failed"):
                 problems.append({**ref, "outcome": out.outcome, "reason": out.reason})
-            notices += [{**ref, "text": text} for text in out.notices]
-    except Exception as exc:
+            notices += [{**ref, "text": text} for text in out.notices]    except Exception as exc:
         finish_run(conn, run_id, "failed", type(exc).__name__)
         raise
     finish_run(conn, run_id, "ok", rules_error)
