@@ -232,8 +232,32 @@ async function catClick(e){const b=e.target.closest('button[data-ca]');if(!b||ca
       else{const m=$('#catmsg');if(m)m.innerHTML='<span class="warn">Reglas guardadas, pero hay cambios nuevos sin guardar.</span>'}}
     catch(er){catSaving=false;const m=$('#catmsg');if(m)m.innerHTML=`<span class="bad">${esc(catErr(er))}</span>`}
     finally{catSaving=false;b.disabled=false;const sb=$('#cat button[data-ca="save"]');if(sb)sb.disabled=false}}}
+let emSeq=0,emBusy=false,emSummary='';
+function drawEm(rows){const el=$('#em');if(!el)return;
+  el.innerHTML=`<h3 style="margin-top:0">Emails no importados</h3><p class="mut">Emails guardados que fallaron o fueron rechazados al leerlos. «Reprocesar» vuelve a leer solo los fallidos con la versión actual del lector.</p>
+  <div class="row2"><button class="b p" data-em="re" ${emBusy?'disabled':''}>Reprocesar</button><button class="b" data-em="reload">Recargar</button></div><div id="emsum" style="margin:8px 0">${emSummary}</div>
+  ${rows.length?`<div class="scroll"><table><thead><tr><th>Fecha</th><th>Asunto</th><th>Motivo</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc((r.alert_date||'').slice(0,10)||'sin fecha')}</td><td>${esc(r.subject||'(sin asunto)')}</td><td>${esc(r.reason||'')}</td><td>${r.outcome==='failed'?'Fallido':r.outcome==='rejected'?'Rechazado':esc(r.outcome)}</td><td><a href="/api/alerts/emails/${encodeURIComponent(r.email_id)}/raw" download>Descargar original</a></td></tr>`).join('')}</tbody></table></div>`:'<span class="mut">No hay emails fallidos ni rechazados.</span>'}`}
+async function loadEm(){const el=$('#em');if(!el)return;const my=++emSeq;
+  let rows;
+  try{const parts=await Promise.all(['failed','rejected'].map(o=>api('/alerts/emails?outcome='+o)));
+    rows=[].concat(...parts).sort((a,b)=>String(b.alert_date||'')<String(a.alert_date||'')?-1:String(b.alert_date||'')>String(a.alert_date||'')?1:0)}
+  catch(er){if(my!==emSeq||!$('#em'))return;$('#em').innerHTML=`<h3 style="margin-top:0">Emails no importados</h3><span class="bad">${esc(errTxt('No se pudieron cargar los emails',er))}</span> <button class="b" data-em="reload">Reintentar</button>`;return}
+  if(my!==emSeq||!$('#em'))return;
+  try{drawEm(rows)}catch(er){$('#em').innerHTML=`<span class="bad">${esc(renderWarn(er))}</span>`}}
+async function emClick(e){const b=e.target.closest('button[data-em]');if(!b)return;
+  if(b.dataset.em==='reload'){if(!emBusy)loadEm();return}
+  if(emBusy)return;
+  emBusy=true;b.disabled=true;emSummary='<span class="mut">Reprocesando…</span>';const sm=$('#emsum');if(sm)sm.innerHTML=emSummary;
+  let s=null;
+  try{s=await api('/alerts/reprocess',{method:'POST',body:{scope:'failed'}})}
+  catch(er){emSummary=`<span class="bad">${esc(errTxt('No se pudo reprocesar',er))}</span>`}
+  finally{emBusy=false;const rb=$('#em button[data-em="re"]');if(rb)rb.disabled=false}
+  if(s){try{emSummary=importLines(s)}catch(er){emSummary=`<span class="bad">${esc(renderWarn(er))}</span>`}}
+  const sm2=$('#emsum');if(sm2)sm2.innerHTML=emSummary;
+  await loadEm()}
 function renderData(){
   $('#main').innerHTML=`<div class="card" id="cat"><span class="mut">Cargando categorías…</span></div>
+  <div class="card" id="em"><span class="mut">Cargando emails…</span></div>
   <div class="card"><h3 style="margin-top:0">Importar emails de alerta</h3><p class="mut">Archivos <code>.eml</code> o <code>.mbox</code> guardados de las alertas de Idealista. Se leen en tu navegador y se envían solo a este servidor local.</p><div class="row2"><input type="file" id="af" accept=".eml,.mbox" multiple><button class="b p" id="ab">Importar emails</button></div><div id="ao" style="margin-top:10px"></div></div>
   <div class="card"><h3 style="margin-top:0">Idealista (vía idealista-mcp)</h3><p class="mut">Requiere config/providers.yaml y tus credenciales de la API de Idealista. Argumentos opcionales como JSON, p. ej. <code>{"center":"40.3458,-3.8249","distance":3000}</code>.</p><div class="row2"><input id="ia" style="flex:1" placeholder="{} (usa los de providers.yaml)"><button class="b p" id="ib">Buscar e importar</button></div></div>
   <div class="card"><h3 style="margin-top:0">Anuncios (CSV)</h3><p class="mut">Columnas: url,title,property_type,price,area_m2,bedrooms,bathrooms,plot_m2,garden,new_build,lat,lon,municipality,district,neighborhood</p><textarea id="lc" placeholder="pega aquí el CSV"></textarea><p><button class="b p" id="lb">Importar anuncios</button></p></div>
@@ -243,7 +267,8 @@ function renderData(){
   $('#ab').onclick=importAlerts;
   $('#cat').onclick=catClick;
   $('#cat').oninput=e=>{const i=e.target.closest('input[data-f]');if(i)catRules[+i.closest('tr').dataset.i][i.dataset.f]=i.value};
-  loadCat();
+  $('#em').onclick=emClick;
+  loadCat();loadEm();
   go('#ib',async()=>{const t=$('#ia').value.trim();const r=await api('/providers/idealista/search',{method:'POST',body:t?JSON.parse(t):{}});return r.imported+' anuncios importados'});
   go('#lb',async()=>{const r=await api('/listings/import-csv',{method:'POST',body:$('#lc').value});return r.imported+' anuncios importados'});
   go('#ib2',async()=>{const r=await api('/indicators/import-csv',{method:'POST',body:$('#ic').value});return r.imported+' indicadores importados'});
