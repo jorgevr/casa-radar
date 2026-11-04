@@ -236,7 +236,8 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
         notes = [n for n in notes if "text" in n]
         out["problems"] = [dict(r) for r in conn.execute(
             "SELECT email_id, alert_date, subject, outcome, reason FROM alert_emails "
-            "WHERE first_run_id=? AND outcome IN ('rejected','failed') ORDER BY rowid", (run_id,))]
+            f"WHERE {'last_run_id' if out['kind'] == 'reprocess' else 'first_run_id'}=? "
+            "AND outcome IN ('rejected','failed') ORDER BY rowid", (run_id,))]
         out["problems"] += [{"email_id": n["email_id"], "alert_date": None, "subject": None,
                              "outcome": "failed", "reason": n["reason"]} for n in file_failures]
         out["notices"] = [{"email_id": n["email_id"], "alert_date": subj[n["email_id"]]["alert_date"] if n["email_id"] in subj else None,
