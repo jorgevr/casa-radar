@@ -20,7 +20,7 @@ tr.ex td{opacity:.5}tr.gone td{color:var(--mut)}tr.gone .bar,tr.gone .pill{opaci
 input,select,textarea,button.b{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
 button.b{cursor:pointer}button.b.p{background:var(--acc);color:#fff;border-color:var(--acc)}textarea{width:100%;min-height:110px;font-family:ui-monospace,monospace;font-size:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}label{display:block;font-size:12px;color:var(--mut)}label input,label select{width:100%;margin-top:2px}
-.row2{display:flex;gap:10px;align-items:center;flex-wrap:wrap}ul.fl{margin:6px 0;padding-left:18px}.hide{display:none}.det td{white-space:normal;background:var(--bg)}
+.row2{display:flex;gap:10px;align-items:center;flex-wrap:wrap}ul.fl{margin:6px 0;padding-left:18px}.hide{display:none}.det td{white-space:normal;background:var(--bg)}.det a{color:var(--acc)}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 14px}h3{margin:14px 0 6px;font-size:13px}.scroll{overflow-x:auto}
 </style>
 </head>
@@ -152,9 +152,10 @@ function detail(l){const e=l.eval,m=e.mortgage;
     ${m.stress.map(s=>`<span class="mut">Tipo ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio)+')':''}</span>`).join('')}</div></div>`;
   h+=attrBlock(l)+devBlock(l)+nbBlock(l);
   const sg=l.sightings||[];
-  h+=`<p class="mut">Fuente: ${sg.length?'Idealista (email de alerta)':l.source==='idealista'?'Idealista':esc(l.source||'desconocido')} · visto por primera vez: ${esc(l.first_seen||'desconocido')} · última vez: ${esc(l.last_seen||'desconocido')}</p>`;
+  const srcLine=`<p class="mut" style="margin-top:0">Fuente: ${sg.length?'Idealista (email de alerta)':l.source==='idealista'?'Idealista':esc(l.source||'desconocido')} · visto por primera vez: ${esc(l.first_seen||'desconocido')} · última vez: ${esc(l.last_seen||'desconocido')}</p>`;
+  h+=`<div>${srcLine}`;
   if(sg.length)h+=`<h3>Emails de alerta</h3><ul class="fl">${sg.map(x=>`<li><span class="mut">${esc(fmtDate(x.alert_date))}</span> ${esc(x.subject||'sin asunto')}</li>`).join('')}</ul>`;
-  h+=`<h3>Historial de precios</h3><div id="ph"><span class="mut">Cargando…</span></div>`;
+  h+=`</div><div><h3>Historial de precios</h3><div id="ph"><span class="mut">Cargando…</span></div></div>`;
   const a=Object.entries(e.amenities);h+=`<div><h3>Servicios cercanos (OSM)</h3>${a.length?`<div class="kv">${a.map(([k,v])=>`<span class="mut">${esc(k)}</span><span>${v.nearest_m} m</span>`).join('')}</div>`:'<span class="mut">sin calcular</span>'}</div></div>`;
   if(e.excluded.length)h+=`<h3>No cumple tus filtros</h3><ul class="fl bad">${e.excluded.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
   const fl=e.flags.filter(x=>x!==NB_FLAG);
@@ -233,17 +234,20 @@ async function catClick(e){const b=e.target.closest('button[data-ca]');if(!b||ca
     catch(er){catSaving=false;const m=$('#catmsg');if(m)m.innerHTML=`<span class="bad">${esc(catErr(er))}</span>`}
     finally{catSaving=false;b.disabled=false;const sb=$('#cat button[data-ca="save"]');if(sb)sb.disabled=false}}}
 let emSeq=0,emBusy=false,emSummary='';
-function drawEm(rows){const el=$('#em');if(!el)return;
+function drawEm(rows,errs=[],bothFailed=false){const el=$('#em');if(!el)return;
   el.innerHTML=`<h3 style="margin-top:0">Emails no importados</h3><p class="mut">Emails guardados que fallaron o fueron rechazados al leerlos. «Reprocesar» vuelve a leer solo los fallidos con la versión actual del lector.</p>
   <div class="row2"><button class="b p" data-em="re" ${emBusy?'disabled':''}>Reprocesar</button><button class="b" data-em="reload">Recargar</button></div><div id="emsum" style="margin:8px 0">${emSummary}</div>
-  ${rows.length?`<div class="scroll"><table><thead><tr><th>Fecha</th><th>Asunto</th><th>Motivo</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc((r.alert_date||'').slice(0,10)||'sin fecha')}</td><td>${esc(r.subject||'(sin asunto)')}</td><td>${esc(r.reason||'')}</td><td>${r.outcome==='failed'?'Fallido':r.outcome==='rejected'?'Rechazado':esc(r.outcome)}</td><td><a href="/api/alerts/emails/${encodeURIComponent(r.email_id)}/raw" download>Descargar original</a></td></tr>`).join('')}</tbody></table></div>`:'<span class="mut">No hay emails fallidos ni rechazados.</span>'}`}
+  ${errs.length?`<div style="margin:8px 0">${errs.map(x=>`<div class="bad">${esc(x)}</div>`).join('')}<button class="b" data-em="reload" style="margin-top:6px">Reintentar</button></div>`:''}
+  ${bothFailed?'':rows.length?`<div class="scroll"><table><thead><tr><th>Fecha</th><th>Asunto</th><th>Motivo</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc((r.alert_date||'').slice(0,10)||'sin fecha')}</td><td>${esc(r.subject||'(sin asunto)')}</td><td>${esc(r.reason||'')}</td><td>${r.outcome==='failed'?'Fallido':r.outcome==='rejected'?'Rechazado':esc(r.outcome)}</td><td><a href="/api/alerts/emails/${encodeURIComponent(r.email_id)}/raw" download>Descargar original</a></td></tr>`).join('')}</tbody></table></div>`:'<span class="mut">No hay emails fallidos ni rechazados.</span>'}`}
 async function loadEm(){const el=$('#em');if(!el)return;const my=++emSeq;
-  let rows;
-  try{const parts=await Promise.all(['failed','rejected'].map(o=>api('/alerts/emails?outcome='+o)));
-    rows=[].concat(...parts).sort((a,b)=>String(b.alert_date||'')<String(a.alert_date||'')?-1:String(b.alert_date||'')>String(a.alert_date||'')?1:0)}
-  catch(er){if(my!==emSeq||!$('#em'))return;$('#em').innerHTML=`<h3 style="margin-top:0">Emails no importados</h3><span class="bad">${esc(errTxt('No se pudieron cargar los emails',er))}</span> <button class="b" data-em="reload">Reintentar</button>`;return}
+  const LISTS=[['failed','fallidos'],['rejected','rechazados']];
+  const res=await Promise.all(LISTS.map(([o,n])=>api('/alerts/emails?outcome='+o).then(v=>({ok:1,v}),er=>({ok:0,msg:er instanceof TypeError?'Lista de emails '+n+': '+errTxt('',er):errTxt('No se pudo cargar la lista de emails '+n,er)}))));
   if(my!==emSeq||!$('#em'))return;
-  try{drawEm(rows)}catch(er){$('#em').innerHTML=`<span class="bad">${esc(renderWarn(er))}</span>`}}
+  const errs=res.filter(r=>!r.ok).map(r=>r.msg);
+  try{
+    const rows=[].concat(...res.filter(r=>r.ok).map(r=>r.v)).sort((a,b)=>String(b.alert_date||'')<String(a.alert_date||'')?-1:String(b.alert_date||'')>String(a.alert_date||'')?1:0);
+    drawEm(rows,errs,errs.length===res.length)}
+  catch(er){$('#em').innerHTML=`<span class="bad">${esc(renderWarn(er))}</span>`}}
 async function emClick(e){const b=e.target.closest('button[data-em]');if(!b)return;
   if(b.dataset.em==='reload'){if(!emBusy)loadEm();return}
   if(emBusy)return;
