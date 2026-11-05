@@ -201,18 +201,21 @@ def test_email_that_still_fails_stays_failed_with_new_version_and_reason(conn, m
     assert "2 tarjetas" in summary["problems"][0]["reason"]
 
 
-def test_failing_reprocess_does_not_blank_the_listing_an_earlier_import_made(conn, monkeypatch, no_network):
+def test_failing_reprocess_keeps_the_sightings_and_the_listing_an_earlier_import_made(conn, monkeypatch, no_network):
     (out,) = store(conn, [fixture(DROP_NAME)])
     before = _listing(conn, DROP_LISTING)
     assert before["price"] == 645000
+    sightings_before = table(conn, "SELECT * FROM sightings WHERE email_id=?", out.email_id)
+    assert len(sightings_before) == 1
     newer_reader(monkeypatch, problem=Problem("tarjeta del anuncio", "una tarjeta", "0 tarjetas"))
 
     summary = alerts.reprocess(conn, scope="all")
 
     assert _counts(summary) == (1, 0, 0, 0, 1)
     assert _email(conn, out.email_id)["outcome"] == "failed"
-    assert conn.execute("SELECT COUNT(*) FROM sightings WHERE email_id=?", (out.email_id,)).fetchone()[0] == 0
-    # FR-009 / FR-011: the email no longer supports the listing, but nothing is deleted or blanked; the
+    # user decision on review finding F3 (T044): "keep old sightings" when the new read is not imported (FU6a)
+    assert table(conn, "SELECT * FROM sightings WHERE email_id=?", out.email_id) == sightings_before
+    # FR-009 / FR-011: nothing is deleted or blanked; the
     # listing keeps what it had (an alert never writes null over a known value)
     assert _listing(conn, DROP_LISTING) == before
 

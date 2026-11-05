@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from email import policy
 from email.utils import parseaddr
+from html.parser import HTMLParser
 from pathlib import Path
 
 from . import categories, derive
@@ -28,6 +29,10 @@ REASON_UNSUPPORTED_FILE = "unsupported file format: save as .eml"
 REASON_UNREADABLE_FILE = "unreadable file: expected an .eml or .mbox file"
 REASON_EMPTY_MBOX = "no messages found in .mbox file (an .eml saved with an .mbox name is not valid mbox)"
 EMAIL_SUFFIXES =(".eml", ".mbox")
+EXCERPT_CHARS = 120
+EXCERPT_HTML_BYTES = 16 * 1024  # markup fed to the excerpt parser: bounds the cost of hostile, unterminated markup
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+URL_RE = re.compile(r"(?:https?://|\bwww\.)\S+|\S+@\S+", re.I)  # links and e-mail addresses
 REASON_NO_DATE = "fecha del email: se esperaba una cabecera Date válida"
 
 SIGHTING_FIELDS = ("price", "previous_price", "area_m2", "bedrooms", "floor", "exterior", "elevator", "garage",
@@ -80,8 +85,51 @@ def _alert_date(msg) -> str | None:
     return dt.isoformat() if dt else None
 
 
+class _VisibleText(HTMLParser):
+    """Text a reader would see: no tags, comments, script, style, head or title."""
+    HIDDEN = ("script", "style", "head", "title")
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag, attrs):
+        self.hidden += tag in self.HIDDEN
+
+    def handle_endtag(self, tag):
+        self.hidden -= tag in self.HIDDEN and self.hidden > 0
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def _visible_excerpt(msg) -> str:
+    """Start of the visible text of the HTML body (links removed, whitespace collapsed, at most EXCERPT_CHARS).
+
+    Only to help read an error message; nothing is parsed from it. Empty when there is no HTML body."""
+    html = reader._html(msg)
+    if not html:
+        return ""
+    html = html[:EXCERPT_HTML_BYTES]
+    parser = _VisibleText()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # malformed markup: keep what was read so far
+        pass
+    text = " ".join(URL_RE.sub(" ", CONTROL_RE.sub(" ", " ".join(parser.parts))).split())
+    return text[:EXCERPT_CHARS].rstrip()
+
+
 def _problem_reason(problems) -> str:
     return "; ".join(f"{p.where}: se esperaba {p.expected}, encontrado {p.found}" for p in problems)
+
+
+def _failed_reason(msg, evidence: str) -> str:
+    excerpt = _visible_excerpt(msg)
+    return f"{evidence}; texto del email: {excerpt}" if excerpt else evidence
 
 
 def _classify(msg, email_id: str, alert_date: str | None):
@@ -102,8 +150,8 @@ def _classify(msg, email_id: str, alert_date: str | None):
         elif result.alert_type == "unsupported":
             out = Outcome(email_id, "rejected", REASON_UNSUPPORTED)
         elif result.problems or len(result.listings) != 1:
-            out = Outcome(email_id, "failed", _problem_reason(result.problems) or
-                          f"anuncios en el email: se esperaba 1, encontrado {len(result.listings)}")
+            out = Outcome(email_id, "failed", _failed_reason(msg, _problem_reason(result.problems) or
+                          f"anuncios en el email: se esperaba 1, encontrado {len(result.listings)}"))
         elif alert_date is None:
             out = Outcome(email_id, "failed", REASON_NO_DATE)
         else:
@@ -268,9 +316,13 @@ def reprocess(conn, scope: str = "failed") -> dict:
     """Re-read stored raw emails with the current reader (T044, US4-3). Never touches raw or content_hash.
 
     scope "failed": emails that failed or were rejected by an older reader (reader_version different from the
-    current one: a current-version failure would only fail again); "all": every stored email. Each email is one transaction: its sightings are replaced and the
-    listings it touched (before or after) are re-derived, or nothing changes. An email that no longer reads
-    keeps the listing earlier sightings made (nothing is deleted or blanked, FR-009/FR-011)."""
+    current one: a current-version failure would only fail again); "all": every stored email.
+    Each email is one transaction. The row records the new outcome, reason, reader version and run. When the new
+    read is "imported" its sightings are replaced and the listings it touched are re-derived. When it is not
+    (failed or rejected) its existing sightings are KEPT and nothing is derived again: a failed read never
+    changes a listing (FR-009/FR-011, review T044 F3). An unexpected exception rolls that email back, leaves
+    its row and sightings as they were, and is listed in the run notes as a failed problem with the exception
+    class name only (no message, no path)."""
     if scope not in REPROCESS_SCOPES:
         raise ValueError(f"scope must be one of {', '.join(REPROCESS_SCOPES)}, found {scope!r}")
     run_id = start_run(conn, "reprocess")
@@ -300,9 +352,11 @@ def reprocess(conn, scope: str = "failed") -> dict:
                         category, matched = row["category"], json.loads(row["category_rules_matched"] or "[]")
                     else:
                         category, matched = categories.categorise(categories.email_text(search_name, subject), rules)
-                    touched = {r["listing_id"] for r in conn.execute(
-                        "SELECT listing_id FROM sightings WHERE email_id=?", (email_id,))}
-                    conn.execute("DELETE FROM sightings WHERE email_id=?", (email_id,))
+                    touched: set[str] = set()
+                    if out.outcome == "imported":  # only a good read replaces the sightings
+                        touched = {r["listing_id"] for r in conn.execute(
+                            "SELECT listing_id FROM sightings WHERE email_id=?", (email_id,))}
+                        conn.execute("DELETE FROM sightings WHERE email_id=?", (email_id,))
                     conn.execute(
                         "UPDATE alert_emails SET outcome=?, reason=?, reader_version=?, alert_type=?, search_name=?, "
                         "alert_date=?, category=?, category_rules_matched=?, last_run_id=? WHERE email_id=?",
@@ -321,8 +375,8 @@ def reprocess(conn, scope: str = "failed") -> dict:
                 stored = conn.execute("SELECT subject, alert_date FROM alert_emails WHERE email_id=?",
                                       (email_id,)).fetchone()
                 alert_date, subject = (stored["alert_date"], stored["subject"]) if stored else (None, None)
-                with conn:
-                    _count(conn, run_id, out, False)
+                with conn:  # listed in the run notes (what run_detail reads); the email's row stays unchanged
+                    _count_file_failure(conn, run_id, email_id, out.reason)
             ref = {"email_id": email_id, "alert_date": alert_date, "subject": subject}
             if out.outcome in ("rejected", "failed"):
                 problems.append({**ref, "outcome": out.outcome, "reason": out.reason})
