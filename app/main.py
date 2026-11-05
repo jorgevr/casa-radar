@@ -238,8 +238,12 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
             "SELECT email_id, alert_date, subject, outcome, reason FROM alert_emails "
             f"WHERE {'last_run_id' if out['kind'] == 'reprocess' else 'first_run_id'}=? "
             "AND outcome IN ('rejected','failed') ORDER BY rowid", (run_id,))]
-        out["problems"] += [{"email_id": n["email_id"], "alert_date": None, "subject": None,
-                             "outcome": "failed", "reason": n["reason"]} for n in file_failures]
+        for n in file_failures:  # a whole file has no row (null date/subject); a reprocess exception has one
+            stored = conn.execute("SELECT alert_date, subject FROM alert_emails WHERE email_id=?",
+                                  (n["email_id"],)).fetchone()
+            out["problems"].append({"email_id": n["email_id"], "alert_date": stored["alert_date"] if stored else None,
+                                    "subject": stored["subject"] if stored else None,
+                                    "outcome": "failed", "reason": n["reason"]})
         out["notices"] = [{"email_id": n["email_id"], "alert_date": subj[n["email_id"]]["alert_date"] if n["email_id"] in subj else None,
                            "subject": subj[n["email_id"]]["subject"] if n["email_id"] in subj else None, "text": n["text"]} for n in notes]
         return out
