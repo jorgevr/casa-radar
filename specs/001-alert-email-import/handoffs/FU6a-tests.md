@@ -47,12 +47,16 @@ Run once: 5 failed, 5 passed. Each failure is a missing behaviour, not an import
 - The forward and text/plain reasons are `failed` but fixed phrases: no excerpt.
 - Multiple problems in one reason: the excerpt is appended once (tests do not constrain this).
 
-## Existing test that contradicts decision 1 (NOT edited)
-- `tests/test_alerts_reprocess.py::test_failing_reprocess_does_not_blank_the_listing_an_earlier_import_made` asserts
-  `COUNT(*) FROM sightings WHERE email_id=? == 0` after a failing re-read (the old delete behaviour). It must be changed
-  deliberately (the sighting is now kept; the listing equality assertion stays valid).
-- Also stale: the `reprocess` docstring in `app/alerts.py` (F3 note of the FU5 review) and the module docstring of
-  `tests/test_alerts_reprocess.py` if it states sightings are replaced for every re-read.
+## Existing test changed deliberately (coordinator instruction, commit "FU6a: tests update for kept sightings")
+- `tests/test_alerts_reprocess.py`: `test_failing_reprocess_does_not_blank_the_listing_an_earlier_import_made` renamed to
+  `test_failing_reprocess_keeps_the_sightings_and_the_listing_an_earlier_import_made` (the old name said only "not blank").
+- Why: user decision on review finding F3 (T044): "keep old sightings". The old assertion required the email's sightings to
+  be deleted (COUNT == 0) after a failing re-read; that is the opposite of the decision.
+- What: it now reads the email's sightings before the reprocess (one row) and asserts the rows are identical afterwards
+  (replaced the `COUNT == 0` line, added the two "before" lines and a comment). The `_listing(...) == before` assertion, the
+  counts, the failed outcome and everything else are unchanged. No other existing test was touched.
+- Still stale (for the developer): the `reprocess` docstring in `app/alerts.py`, and the module docstring of
+  `tests/test_alerts_reprocess.py` ("replaces the email's sightings"), which I did not edit.
 - `test_email_that_still_fails_stays_failed_with_new_version_and_reason` has no prior sightings, so it is unaffected.
 
 ## Gates
