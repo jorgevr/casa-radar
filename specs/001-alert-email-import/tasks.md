@@ -198,6 +198,8 @@ version bump imports the fixed one.
 - [x] T045 [US4] Add `reprocess-emails [--failed|--all]` to `app/cli.py`; add `GET /api/alerts/emails`, `GET /api/alerts/emails/{id}/raw`, `POST /api/alerts/reprocess` to `app/main.py` per contracts
 - [x] T046 [US4] In `app/static/index.html` Datos tab, add "Emails no importados": table of failed/rejected emails (date, subject, reason), a link to view raw, and a "Reprocesar" button
 - [x] FU5 Reprocess hardening (review findings of T044): `/api/runs/{id}` lists the problems of a reprocess run; a malformed categories file keeps stored categories on reprocess; scope `failed` selects emails whose `reader_version` differs from the current one; one email raising an unexpected exception no longer aborts the run. Tests: `tests/test_reprocess_hardening.py`. Added by coordinator after the T044 review
+- [x] FU6a Reprocess keeps the existing sightings of an email that no longer reads as `imported` (user decision after the Phase 7 UI test); an unexpected exception during a re-read is listed in the run detail (class name only); a failed `se esperaba … encontrado …` reason ends with a short visible-text excerpt of the email (120 characters, links, e-mail addresses and control characters removed, parser input capped at 16 KB). Tests: `tests/test_followups_reprocess_reasons.py`
+- [x] FU6b UI: "Emails no importados" names the list that failed to load and still shows the other; the listing detail panel keeps each heading with its own content and the "abrir anuncio" link uses the theme colour (found in the user's UI test of Phase 7)
 
 ---
 
