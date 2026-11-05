@@ -30,7 +30,9 @@ REASON_UNREADABLE_FILE = "unreadable file: expected an .eml or .mbox file"
 REASON_EMPTY_MBOX = "no messages found in .mbox file (an .eml saved with an .mbox name is not valid mbox)"
 EMAIL_SUFFIXES =(".eml", ".mbox")
 EXCERPT_CHARS = 120
-URL_RE = re.compile(r"https?://\S+")
+EXCERPT_HTML_BYTES = 16 * 1024  # markup fed to the excerpt parser: bounds the cost of hostile, unterminated markup
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+URL_RE = re.compile(r"(?:https?://|\bwww\.)\S+|\S+@\S+", re.I)  # links and e-mail addresses
 REASON_NO_DATE = "fecha del email: se esperaba una cabecera Date válida"
 
 SIGHTING_FIELDS = ("price", "previous_price", "area_m2", "bedrooms", "floor", "exterior", "elevator", "garage",
@@ -110,13 +112,14 @@ def _visible_excerpt(msg) -> str:
     html = reader._html(msg)
     if not html:
         return ""
+    html = html[:EXCERPT_HTML_BYTES]
     parser = _VisibleText()
     try:
         parser.feed(html)
         parser.close()
     except Exception:  # malformed markup: keep what was read so far
         pass
-    text = " ".join(URL_RE.sub(" ", " ".join(parser.parts)).split())
+    text = " ".join(URL_RE.sub(" ", CONTROL_RE.sub(" ", " ".join(parser.parts))).split())
     return text[:EXCERPT_CHARS].rstrip()
 
 

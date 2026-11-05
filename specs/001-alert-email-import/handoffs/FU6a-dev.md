@@ -24,3 +24,12 @@ SCORING_VERSION unchanged, tests untouched).
 
 ## Gates (isolation under %TEMP%\casa-agent\FU6a-dev)
 compileall ok; pytest -m "not slow": 484 passed; anonymise check ok; forbidden-path diff clean; requirements.txt diff empty.
+
+## Review 1 fix (F1, F2)
+`app/alerts.py` only. The excerpt parser now gets at most `EXCERPT_HTML_BYTES` (16 KB) of the body, so hostile unterminated
+markup cannot make parsing quadratic. Before the cleaning, C0 controls and DEL (`CONTROL_RE`) become spaces; `URL_RE` now also
+strips bare `www.` links and e-mail addresses (`\S+@\S+`), besides `http(s)://`. 120-char cap unchanged.
+Note: the visible text must start within the first 16 KB of the body to appear in the excerpt (true for the fixtures); beyond that
+the excerpt is simply shorter or empty.
+Gates: hostile/new tests alone 14 passed in 5 s (run under `timeout 300`); pytest -m "not slow" 488 passed; compileall ok;
+anonymise check exit 0; forbidden-path diff clean (only app/alerts.py, tests, handoffs, review); requirements diff empty.
