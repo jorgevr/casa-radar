@@ -25,6 +25,7 @@ import difflib
 import email
 import re
 import sqlite3
+import time
 from email import policy
 from email.message import EmailMessage
 from html.parser import HTMLParser
@@ -281,6 +282,67 @@ def test_failed_reason_of_the_plain_truncated_fixture_keeps_evidence_and_adds_te
     shared = _longest_shared(out.reason, visible)
     assert 40 <= shared <= 120, shared
     assert "http" not in out.reason
+
+
+# -- 3b. excerpt hardening (review FU6a F1, F2) ---------------------------------------------------------
+LEAD = "palabra " * 40  # 320 visible characters before the hostile markup: the excerpt has something to cut
+HOSTILE = {  # about 200 KB each; every shape is malformed markup an HTML parser may take quadratic time on
+    "unterminated-a": "<a " * 70_000,
+    "unclosed-comments": "<!--" * 50_000,
+    "unclosed-charrefs": "&#" * 100_000,
+}
+
+
+def _card_removed_with_html(name: str, tag: str, injected: str, trailer: str = "") -> bytes:
+    """Card removed, `injected` right after <body ...>, `trailer` after the last tag (no later '>' can close it)."""
+    msg = email.message_from_bytes((EMAILS / name).read_bytes(), policy=policy.default)
+    body = msg.get_body(preferencelist=("html",))
+    html = CARD_RE.sub("", body.get_content())
+    html, n = re.subn(r"(<body[^>]*>)", lambda m: m[1] + injected, html, count=1)
+    assert n == 1
+    body.set_content(html + trailer, subtype="html")
+    del msg["Message-ID"]
+    msg["Message-ID"] = f"<{tag}@example.invalid>"
+    return msg.as_bytes()
+
+
+@pytest.mark.parametrize("shape", sorted(HOSTILE))
+def test_hostile_markup_is_classified_quickly_with_a_bounded_excerpt(conn, no_network, shape):
+    raw = _card_removed_with_html(DROP_NAME, f"hostile-{shape}", f"<p>{LEAD}</p>", HOSTILE[shape])
+    assert len(raw) > 150_000  # precondition: a big body
+
+    started = time.perf_counter()
+    (out,) = store(conn, [raw])
+    elapsed = time.perf_counter() - started
+
+    assert elapsed < 2.0, f"{shape}: classification took {elapsed:.1f}s"  # generous; quadratic parsing takes far longer
+    assert out.outcome == "failed"
+    reason = _email(conn, out.email_id)["reason"]
+    assert reason == out.reason
+    assert re.search(r"se esperaba .+, encontrado .+", reason)
+    assert "encontrado ninguno" in reason  # precondition: no listing link in this body
+    tail = reason.split("encontrado ninguno", 1)[1]  # whatever follows the evidence: separator, label, excerpt
+    assert len(tail) <= 120 + 40, len(tail)  # excerpt at most 120 characters plus a short label/separator
+    assert "palabra palabra" in tail  # still an excerpt of the visible text (prefix), not dropped
+    assert not re.search(r"[\x00-\x1f\x7f]", reason)
+    stored = _email(conn, out.email_id)
+    assert stored["outcome"] == "failed" and bytes(stored["raw"]) == raw
+
+
+def test_excerpt_drops_control_characters_bare_www_links_and_email_addresses(conn, no_network):
+    # hand calculation: after cleaning, the visible text starts "Contacto ... fin" with ESC and BEL removed,
+    # the bare link and the address gone
+    injected = "<p>Contacto\x1b[31m ana@example.invalid www.example.invalid/x?a=1 y\x07 fin</p>"
+    raw = _card_removed_with_html(DROP_NAME, "controls-1", injected)
+    (out,) = store(conn, [raw])
+    assert out.outcome == "failed"
+    reason = _email(conn, out.email_id)["reason"]
+    assert re.search(r"se esperaba .+, encontrado .+", reason)
+    assert "Contacto" in reason and "fin" in reason  # the excerpt is there
+    assert not re.search(r"[\x00-\x1f\x7f]", reason)  # no ESC, BEL or any other C0 control
+    assert "@" not in reason and "ana" not in reason
+    assert "www." not in reason and "example.invalid" not in reason
+    assert bytes(_email(conn, out.email_id)["raw"]) == raw
 
 
 # fixed-phrase reasons must not change (pins: they pass now and must keep passing)

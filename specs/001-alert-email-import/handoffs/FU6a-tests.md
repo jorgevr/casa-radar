@@ -61,3 +61,23 @@ Run once: 5 failed, 5 passed. Each failure is a missing behaviour, not an import
 
 ## Gates
 Only the new test file was run (isolation env vars under `%TEMP%\casa-agent\FU6a`). No network, no real data.
+
+## Excerpt hardening tests (review FU6a F1, F2; commit "FU6a: tests excerpt hardening")
+Only `tests/test_followups_reprocess_reasons.py` changed (new helper `_card_removed_with_html`, section 3b).
+- `test_hostile_markup_is_classified_quickly_with_a_bounded_excerpt[unterminated-a | unclosed-comments | unclosed-charrefs]`:
+  a card-removed fixture with 320 visible characters at the start of `<body>` and about 200 KB of `"<a " * 70000`,
+  `"<!--" * 50000` or `"&#" * 100000` appended after the last tag (so no later `>` can close the construct). Asserts
+  (a) `store` of the email takes under 2 s (`time.perf_counter`); (b) failed, `se esperaba .+, encontrado .+` kept, whatever follows
+  `encontrado ninguno` is at most 160 characters (120 of excerpt plus a short label), still starts as an excerpt
+  ("palabra palabra"), no C0 control or DEL anywhere in the reason; (c) stored failed, raw byte for byte equal.
+- `test_excerpt_drops_control_characters_bare_www_links_and_email_addresses`: visible text
+  `Contacto<ESC>[31m ana@example.invalid www.example.invalid/x?a=1 y<BEL> fin`; the excerpt must keep "Contacto" and "fin" and have
+  no C0 control, no `@`/`ana`, no `www.`/`example.invalid`; raw unchanged.
+- Results on the current code: the control/www/e-mail test FAILS for the right reason (ESC survives in the reason, as does the
+  address). `unclosed-comments` and `unterminated-a` run past the time limit: I ran them under `timeout` (60 s and 120 s) and
+  both were killed with no result, so they fail (hang) rather than finish. A direct probe shows where: with 8000 `"<a "` the
+  reader's `read` takes 0.01 s and `alerts._visible_excerpt` 48.8 s, so the whole cost is the excerpt's HTML parsing.
+  `unclosed-charrefs` PASSES now (about 0.1 s, linear): it is a pin. Note for the developer/coordinator: until the fix is in,
+  running the whole file hangs on those two cases, so run them with a timeout.
+- Pitfall found while writing them: hostile markup placed BEFORE the real body is closed by the first real `>` and is fast; it
+  must come after the last tag, as here.
