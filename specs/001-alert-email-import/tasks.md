@@ -205,8 +205,8 @@ version bump imports the fixed one.
 
 ## Phase 8: User Story 6 — New since last sync or import (P3)
 
-- [ ] T047 [P] [US6] Add `tests/test_alerts_new_since.py::test_new_since_last_run`: import batch A then batch B (fixture subsets) → `GET /api/listings?new_since_last_run=true` returns only listings first detected in B
-- [ ] T048 [US6] Set `listings.first_run_id` in `app/derive.py` (the run of the earliest processed sighting; unchanged on re-derivation) and support `new_since_last_run=true` in `GET /api/listings` in `app/main.py`
+- [x] T047 [P] [US6] Add `tests/test_alerts_new_since.py::test_new_since_last_run`: import batch A then batch B (fixture subsets) → `GET /api/listings?new_since_last_run=true` returns only listings first detected in B
+- [x] T048 [US6] Set `listings.first_run_id` in `app/derive.py` (the run of the earliest processed sighting; unchanged on re-derivation) and support `new_since_last_run=true` in `GET /api/listings` in `app/main.py`
 - [ ] T049 [US6] In `app/static/index.html` Oportunidades, add a toggle "Solo nuevos desde la última sincronización/importación"
 
 **Checkpoint — file path complete (target 2026-11-14)**: quickstart §1 (minus mailbox tests),
