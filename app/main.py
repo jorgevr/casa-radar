@@ -114,8 +114,14 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
         return [{"day": r["day"], "price": r["price"], "origin": r["origin"]} for r in rows]
 
     @app.get("/api/listings")
-    def listings():
-        return with_provenance(scoring.rank(conn, needs()))
+    def listings(new_since_last_run: bool = False):
+        ranked = scoring.rank(conn, needs())  # ranks and scores are those of the full list; the filter comes after
+        if new_since_last_run:
+            last = conn.execute("SELECT MAX(run_id) FROM import_runs WHERE kind != 'reprocess' AND status = 'ok'"
+                                ).fetchone()[0]
+            ranked = [l for l in ranked
+                      if last is not None and l.get("first_run_id") is not None and l["first_run_id"] >= last]
+        return with_provenance(ranked)
 
     @app.post("/api/listings")
     def add_listing(body: dict = Body(...)):

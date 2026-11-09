@@ -163,6 +163,11 @@ def derive_listing(conn, listing_id: str) -> None:
             flags.append(f"vuelto a ver en una alerta el {_date(max(later))}")
     values["alert_flags"] = json.dumps(flags, ensure_ascii=False)
     if existing is None:
+        # first_run_id: the run that stored the newest sighting; only ever set here, never updated (T048)
+        newest = conn.execute(
+            "SELECT a.last_run_id FROM sightings s JOIN alert_emails a ON a.email_id = s.email_id "
+            "WHERE s.listing_id=? ORDER BY s.rowid DESC LIMIT 1", (listing_id,)).fetchone()
+        values["first_run_id"] = newest["last_run_id"] if newest is not None else None
         cols = ["id", *values]
         conn.execute(f"INSERT INTO listings({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
                      [listing_id, *values.values()])
