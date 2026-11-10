@@ -72,9 +72,22 @@ def derive_listing(conn, listing_id: str) -> None:
         (z for z in (zones.match_zone(r["location_text"], conn) for r in reversed(rows)) if z[0]),
         (None, None, None))
     stated_new_build = any(r["new_build_stated"] for r in rows)
-    new_build, new_build_origin = (1, "email") if stated_new_build else (None, None)
-    if existing is not None and (existing["new_build_origin"] == "user" or not stated_new_build):
+    # Category (FR-032/FR-033): the email's statement wins; the category only suggests new-build when no email says
+    # anything, and it never touches property_type. "unknown" is also what a sighting without a category counts as.
+    stated_second_hand = not stated_new_build and any(r["new_build_stated"] == 0 for r in rows)
+    seen_new_build_category = any(r["category"] == "new-build" for r in rows)
+    category_new_build = seen_new_build_category and not stated_second_hand
+    if seen_new_build_category and stated_second_hand:
+        flags.append("la categoría dice obra nueva, el email dice segunda mano")
+    found_via = sorted({r["category"] or "unknown" for r in rows})
+    from_category = (1, "category") if category_new_build else (None, None)
+    new_build, new_build_origin = (1, "email") if stated_new_build else from_category
+    if existing is not None and existing["new_build_origin"] == "user":
         new_build, new_build_origin = existing["new_build"], existing["new_build_origin"]
+    elif existing is not None and not stated_new_build:
+        # a value the category set is re-derived (the rules may have changed); any other stored value is kept
+        if existing["new_build_origin"] != "category" and existing["new_build"] is not None:
+            new_build, new_build_origin = existing["new_build"], existing["new_build_origin"]
     new_listing_days = [_day(r["seen_at"]) for r in rows if r["alert_type"] == "new_listing"]
     title = " en ".join(t for t in (v["type_text"], v["location_text"]) if t) or None
 
@@ -86,7 +99,7 @@ def derive_listing(conn, listing_id: str) -> None:
         "new_build": new_build, "new_build_origin": new_build_origin,
         "municipality": municipality, "district": district, "zone_id": zone_id,
         "location_text": v["location_text"], "development": v["development"],
-        "unit_description": v["unit_description"],
+        "unit_description": v["unit_description"], "categories": json.dumps(found_via, ensure_ascii=False),
         "first_seen": _day(rows[0]["seen_at"]), "last_seen": _day(rows[-1]["seen_at"]),
         "published_at": min(new_listing_days) if new_listing_days else None,
         "price_updated_at": price_updated_at,
@@ -150,6 +163,11 @@ def derive_listing(conn, listing_id: str) -> None:
             flags.append(f"vuelto a ver en una alerta el {_date(max(later))}")
     values["alert_flags"] = json.dumps(flags, ensure_ascii=False)
     if existing is None:
+        # first_run_id: the run that stored the newest sighting; only ever set here, never updated (T048)
+        newest = conn.execute(
+            "SELECT a.last_run_id FROM sightings s JOIN alert_emails a ON a.email_id = s.email_id "
+            "WHERE s.listing_id=? ORDER BY s.rowid DESC LIMIT 1", (listing_id,)).fetchone()
+        values["first_run_id"] = newest["last_run_id"] if newest is not None else None
         cols = ["id", *values]
         conn.execute(f"INSERT INTO listings({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
                      [listing_id, *values.values()])

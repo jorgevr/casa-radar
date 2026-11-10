@@ -11,9 +11,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from email import policy
 from email.utils import parseaddr
+from html.parser import HTMLParser
 from pathlib import Path
 
-from . import derive
+from . import categories, derive
 from .db import dumps
 from .providers import idealista_alert as reader
 
@@ -28,6 +29,10 @@ REASON_UNSUPPORTED_FILE = "unsupported file format: save as .eml"
 REASON_UNREADABLE_FILE = "unreadable file: expected an .eml or .mbox file"
 REASON_EMPTY_MBOX = "no messages found in .mbox file (an .eml saved with an .mbox name is not valid mbox)"
 EMAIL_SUFFIXES =(".eml", ".mbox")
+EXCERPT_CHARS = 120
+EXCERPT_HTML_BYTES = 16 * 1024  # markup fed to the excerpt parser: bounds the cost of hostile, unterminated markup
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+URL_RE = re.compile(r"(?:https?://|\bwww\.)\S+|\S+@\S+", re.I)  # links and e-mail addresses
 REASON_NO_DATE = "fecha del email: se esperaba una cabecera Date válida"
 
 SIGHTING_FIELDS = ("price", "previous_price", "area_m2", "bedrooms", "floor", "exterior", "elevator", "garage",
@@ -80,12 +85,102 @@ def _alert_date(msg) -> str | None:
     return dt.isoformat() if dt else None
 
 
+class _VisibleText(HTMLParser):
+    """Text a reader would see: no tags, comments, script, style, head or title."""
+    HIDDEN = ("script", "style", "head", "title")
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self.hidden = 0
+
+    def handle_starttag(self, tag, attrs):
+        self.hidden += tag in self.HIDDEN
+
+    def handle_endtag(self, tag):
+        self.hidden -= tag in self.HIDDEN and self.hidden > 0
+
+    def handle_data(self, data):
+        if not self.hidden:
+            self.parts.append(data)
+
+
+def _visible_excerpt(msg) -> str:
+    """Start of the visible text of the HTML body (links removed, whitespace collapsed, at most EXCERPT_CHARS).
+
+    Only to help read an error message; nothing is parsed from it. Empty when there is no HTML body."""
+    html = reader._html(msg)
+    if not html:
+        return ""
+    html = html[:EXCERPT_HTML_BYTES]
+    parser = _VisibleText()
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:  # malformed markup: keep what was read so far
+        pass
+    text = " ".join(URL_RE.sub(" ", CONTROL_RE.sub(" ", " ".join(parser.parts))).split())
+    return text[:EXCERPT_CHARS].rstrip()
+
+
 def _problem_reason(problems) -> str:
     return "; ".join(f"{p.where}: se esperaba {p.expected}, encontrado {p.found}" for p in problems)
 
 
+def _failed_reason(msg, evidence: str) -> str:
+    excerpt = _visible_excerpt(msg)
+    return f"{evidence}; texto del email: {excerpt}" if excerpt else evidence
+
+
+def _classify(msg, email_id: str, alert_date: str | None):
+    """Decide what a stored message is: (outcome, read result or None, forwarded flag, sender, subject)."""
+    sender = parseaddr(str(msg.get("From", "")))[1].lower()
+    subject = str(msg.get("Subject", ""))
+    types = {part.get_content_type() for part in msg.walk()}
+    forwarded = bool(FORWARD_RE.match(subject)) or "message/rfc822" in types
+    result = None
+    if forwarded:
+        out = Outcome(email_id, "failed", REASON_FORWARD)
+    elif "text/plain" in types and sender in PORTAL_SENDERS:
+        out = Outcome(email_id, "failed", REASON_TEXT_PART)
+    else:
+        result = reader.read(msg)
+        if result.alert_type == "not_alert":
+            out = Outcome(email_id, "rejected", REASON_NOT_ALERT)
+        elif result.alert_type == "unsupported":
+            out = Outcome(email_id, "rejected", REASON_UNSUPPORTED)
+        elif result.problems or len(result.listings) != 1:
+            out = Outcome(email_id, "failed", _failed_reason(msg, _problem_reason(result.problems) or
+                          f"anuncios en el email: se esperaba 1, encontrado {len(result.listings)}"))
+        elif alert_date is None:
+            out = Outcome(email_id, "failed", REASON_NO_DATE)
+        else:
+            out = Outcome(email_id, "imported", notices=list(result.notices))
+    return out, result, forwarded, sender, subject
+
+
+def _record_sighting(conn, out: Outcome, result, alert_date: str, category: str) -> bool:
+    """Insert the sighting of an imported email and re-derive its listing; return whether the price changed."""
+    block = result.listings[0]
+    out.listing_id = f"idealista:{block.listing_code}"
+    before = conn.execute("SELECT * FROM listings WHERE id=?", (out.listing_id,)).fetchone()
+    sighting = {"email_id": out.email_id, "listing_id": out.listing_id, "alert_type": result.alert_type,
+                "seen_at": alert_date, "unrecognised": dumps(result.notices), "category": category,
+                **{f: getattr(block, f) for f in SIGHTING_FIELDS}}
+    conn.execute(f"INSERT INTO sightings({','.join(sighting)}) VALUES({','.join('?' * len(sighting))})",
+                 list(sighting.values()))
+    derive.derive_listing(conn, out.listing_id)
+    after = conn.execute("SELECT * FROM listings WHERE id=?", (out.listing_id,)).fetchone()
+    if before is None:
+        out.listing_change = "new"
+    elif tuple(before) != tuple(after):
+        out.listing_change = "updated"
+        return before["price"] != after["price"]
+    return False
+
+
 def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = None,
-                    mailbox_id: str | None = None, run_id: int) -> Outcome:
+                    mailbox_id: str | None = None, run_id: int, rules: list[dict] | None = None) -> Outcome:
     msg = email.message_from_bytes(raw, policy=policy.default)
     content_hash = hashlib.sha256(raw).hexdigest()
     email_id = str(msg.get("Message-ID") or "").strip() or f"sha256:{content_hash}"
@@ -99,55 +194,29 @@ def process_message(conn, raw: bytes, *, origin: str, file_name: str | None = No
             _count(conn, run_id, out, False)
             return out
 
-        sender = parseaddr(str(msg.get("From", "")))[1].lower()
-        subject = str(msg.get("Subject", ""))
         alert_date = _alert_date(msg)
-        types = {part.get_content_type() for part in msg.walk()}
-        forwarded = bool(FORWARD_RE.match(subject)) or "message/rfc822" in types
+        out, result, forwarded, sender, subject = _classify(msg, email_id, alert_date)
         row = {"email_id": email_id, "mailbox_id": mailbox_id, "content_hash": content_hash, "origin": origin,
                "file_name": file_name, "sender": sender, "subject": subject, "alert_date": alert_date,
                "forwarded": int(forwarded), "reader_version": reader.READER_VERSION, "raw": raw,
                "first_run_id": run_id, "last_run_id": run_id}
-        result = None
-        if forwarded:
-            out = Outcome(email_id, "failed", REASON_FORWARD)
-        elif "text/plain" in types and sender in PORTAL_SENDERS:
-            out = Outcome(email_id, "failed", REASON_TEXT_PART)
-        else:
-            result = reader.read(msg)
+        if result is not None:
             row.update(alert_type=result.alert_type, search_name=result.search_name)
-            if result.alert_type == "not_alert":
-                out = Outcome(email_id, "rejected", REASON_NOT_ALERT)
-            elif result.alert_type == "unsupported":
-                out = Outcome(email_id, "rejected", REASON_UNSUPPORTED)
-            elif result.problems or len(result.listings) != 1:
-                out = Outcome(email_id, "failed", _problem_reason(result.problems) or
-                              f"anuncios en el email: se esperaba 1, encontrado {len(result.listings)}")
-            elif alert_date is None:
-                out = Outcome(email_id, "failed", REASON_NO_DATE)
-            else:
-                out = Outcome(email_id, "imported", notices=list(result.notices))
-        row.update(outcome=out.outcome, reason=out.reason)
+        if rules is None:  # caller did not load rules: a malformed file must not lose the email
+            try:
+                rules = categories.load_rules()
+            except ValueError:
+                rules = []
+        category, rules_matched = categories.categorise(categories.email_text(row.get("search_name"), subject),
+                                                       rules)
+        row.update(outcome=out.outcome, reason=out.reason, category=category,
+                   category_rules_matched=json.dumps(rules_matched, ensure_ascii=False))
         conn.execute(f"INSERT INTO alert_emails({','.join(row)}) VALUES({','.join('?' * len(row))})",
                      list(row.values()))
 
         price_changed = False
         if out.outcome == "imported":
-            block = result.listings[0]
-            out.listing_id = f"idealista:{block.listing_code}"
-            before = conn.execute("SELECT * FROM listings WHERE id=?", (out.listing_id,)).fetchone()
-            sighting = {"email_id": email_id, "listing_id": out.listing_id, "alert_type": result.alert_type,
-                        "seen_at": alert_date, "unrecognised": dumps(result.notices),
-                        **{f: getattr(block, f) for f in SIGHTING_FIELDS}}
-            conn.execute(f"INSERT INTO sightings({','.join(sighting)}) VALUES({','.join('?' * len(sighting))})",
-                         list(sighting.values()))
-            derive.derive_listing(conn, out.listing_id)
-            after = conn.execute("SELECT * FROM listings WHERE id=?", (out.listing_id,)).fetchone()
-            if before is None:
-                out.listing_change = "new"
-            elif tuple(before) != tuple(after):
-                out.listing_change = "updated"
-                price_changed = before["price"] != after["price"]
+            price_changed = _record_sighting(conn, out, result, alert_date, category)
         _count(conn, run_id, out, price_changed)
     return out
 
@@ -206,6 +275,10 @@ def import_paths(conn, paths, kind: str = "file_cli") -> dict:
     problems: list[dict] = []
     notices: list[dict] = []
     try:
+        try:
+            rules, rules_error = categories.load_rules(), None
+        except ValueError as exc:  # malformed rules must not lose emails: store them as 'unknown', report it
+            rules, rules_error = [], f"ValueError: {exc}"
         items: list[tuple[str, bytes]] = []
         for path in _expand(paths):
             try:
@@ -217,7 +290,8 @@ def import_paths(conn, paths, kind: str = "file_cli") -> dict:
                 problems.append({"email_id": path.name, "alert_date": None, "subject": None,
                                  "outcome": "failed", "reason": reason})
         for file_name, raw in sorted(items, key=_sort_key):
-            out = process_message(conn, raw, origin="file", file_name=file_name, run_id=run_id)
+            out = process_message(conn, raw, origin="file", file_name=file_name, run_id=run_id,
+                                  rules=rules)
             if out.outcome == "already":
                 continue
             row = conn.execute("SELECT subject, alert_date FROM alert_emails WHERE email_id=?",
@@ -229,7 +303,88 @@ def import_paths(conn, paths, kind: str = "file_cli") -> dict:
     except Exception as exc:
         finish_run(conn, run_id, "failed", type(exc).__name__)
         raise
-    finish_run(conn, run_id, "ok")
+    finish_run(conn, run_id, "ok", rules_error)
+    summary = dict(conn.execute("SELECT * FROM import_runs WHERE run_id=?", (run_id,)).fetchone())
+    summary.pop("notes", None)
+    return {**summary, "problems": problems, "notices": notices}
+
+
+REPROCESS_SCOPES = ("failed", "all")
+
+
+def reprocess(conn, scope: str = "failed") -> dict:
+    """Re-read stored raw emails with the current reader (T044, US4-3). Never touches raw or content_hash.
+
+    scope "failed": emails that failed or were rejected by an older reader (reader_version different from the
+    current one: a current-version failure would only fail again); "all": every stored email.
+    Each email is one transaction. The row records the new outcome, reason, reader version and run. When the new
+    read is "imported" its sightings are replaced and the listings it touched are re-derived. When it is not
+    (failed or rejected) its existing sightings are KEPT and nothing is derived again: a failed read never
+    changes a listing (FR-009/FR-011, review T044 F3). An unexpected exception rolls that email back, leaves
+    its row and sightings as they were, and is listed in the run notes as a failed problem with the exception
+    class name only (no message, no path)."""
+    if scope not in REPROCESS_SCOPES:
+        raise ValueError(f"scope must be one of {', '.join(REPROCESS_SCOPES)}, found {scope!r}")
+    run_id = start_run(conn, "reprocess")
+    problems: list[dict] = []
+    notices: list[dict] = []
+    try:
+        try:
+            rules, rules_error = categories.load_rules(), None
+        except ValueError as exc:  # keep each email's stored category instead of overwriting it with "unknown"
+            rules, rules_error = None, f"ValueError: {exc}"
+        version = reader.READER_VERSION
+        where = ("" if scope == "all" else
+                 " WHERE outcome IN ('failed','rejected') AND (reader_version IS NULL OR reader_version != ?)")
+        ids = [r["email_id"] for r in conn.execute(
+            "SELECT email_id FROM alert_emails" + where + " ORDER BY alert_date IS NULL, alert_date, rowid",
+            () if scope == "all" else (version,))]
+        for email_id in ids:
+            try:
+                with conn:
+                    row = conn.execute("SELECT raw, category, category_rules_matched FROM alert_emails "
+                                       "WHERE email_id=?", (email_id,)).fetchone()
+                    msg = email.message_from_bytes(row["raw"], policy=policy.default)
+                    alert_date = _alert_date(msg)
+                    out, result, _, _, subject = _classify(msg, email_id, alert_date)
+                    search_name = result.search_name if result is not None else None
+                    if rules is None:
+                        category, matched = row["category"], json.loads(row["category_rules_matched"] or "[]")
+                    else:
+                        category, matched = categories.categorise(categories.email_text(search_name, subject), rules)
+                    touched: set[str] = set()
+                    if out.outcome == "imported":  # only a good read replaces the sightings
+                        touched = {r["listing_id"] for r in conn.execute(
+                            "SELECT listing_id FROM sightings WHERE email_id=?", (email_id,))}
+                        conn.execute("DELETE FROM sightings WHERE email_id=?", (email_id,))
+                    conn.execute(
+                        "UPDATE alert_emails SET outcome=?, reason=?, reader_version=?, alert_type=?, search_name=?, "
+                        "alert_date=?, category=?, category_rules_matched=?, last_run_id=? WHERE email_id=?",
+                        (out.outcome, out.reason, version, result.alert_type if result is not None else None,
+                         search_name, alert_date, category, json.dumps(matched, ensure_ascii=False), run_id,
+                         email_id))
+                    price_changed = False
+                    if out.outcome == "imported":
+                        price_changed = _record_sighting(conn, out, result, alert_date, category)
+                        touched.discard(out.listing_id)
+                    for listing_id in sorted(touched):
+                        derive.derive_listing(conn, listing_id)
+                    _count(conn, run_id, out, price_changed)
+            except Exception as exc:  # this email's transaction is rolled back; keep going with the others
+                out = Outcome(email_id, "failed", type(exc).__name__)  # class name only: no message, no paths
+                stored = conn.execute("SELECT subject, alert_date FROM alert_emails WHERE email_id=?",
+                                      (email_id,)).fetchone()
+                alert_date, subject = (stored["alert_date"], stored["subject"]) if stored else (None, None)
+                with conn:  # listed in the run notes (what run_detail reads); the email's row stays unchanged
+                    _count_file_failure(conn, run_id, email_id, out.reason)
+            ref = {"email_id": email_id, "alert_date": alert_date, "subject": subject}
+            if out.outcome in ("rejected", "failed"):
+                problems.append({**ref, "outcome": out.outcome, "reason": out.reason})
+            notices += [{**ref, "text": text} for text in out.notices]
+    except Exception as exc:
+        finish_run(conn, run_id, "failed", type(exc).__name__)
+        raise
+    finish_run(conn, run_id, "ok", rules_error)
     summary = dict(conn.execute("SELECT * FROM import_runs WHERE run_id=?", (run_id,)).fetchone())
     summary.pop("notes", None)
     return {**summary, "problems": problems, "notices": notices}

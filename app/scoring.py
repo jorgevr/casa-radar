@@ -11,11 +11,12 @@ import json
 
 from . import mortgage
 from .db import indicators_by_zone
+from .derive import USER_ORIGINS
 from .listings import type_group
 from .util import clamp, median
 
 # Research R14: any scoring change bumps this version (2 = unknown-field flags, development handling,
-# duplicate flags). Not yet part of rank() output (T032).
+# duplicate flags). Returned on every listing by rank() and written in the CSV export.
 SCORING_VERSION = 2
 
 # Research R15 defaults for possible-duplicate detection, used only when needs has no `duplicates` section.
@@ -84,24 +85,63 @@ def amenity_score(data: dict | None, cfg: dict) -> tuple[float | None, dict]:
 
 
 # ── listing ──────────────────────────────────────────────────────────────────
-def _hard_filters(l, needs) -> list[str]:
+DEVELOPMENT_FLAG = "promoción: sin vivienda elegida"
+UNIT_FIELDS = ("price", "area_m2", "bedrooms")
+
+
+def unit_unchosen(l) -> bool:
+    """R13/R15: a development whose price, area and bedrooms are not all user-owned has no unit chosen yet."""
+    if not l.get("development"):
+        return False
+    try:
+        sources = json.loads(l.get("field_sources") or "{}")
+    except (TypeError, ValueError):
+        sources = {}
+    if not isinstance(sources, dict):
+        sources = {}
+    return not all(sources.get(k) in USER_ORIGINS for k in UNIT_FIELDS)
+
+
+def _hard_filters(l, needs, unchosen: bool = False) -> tuple[list[str], list[str]]:
+    """(exclusion reasons, flags). A null field never passes silently (FR-012): it gives a flag, not an exclusion.
+    A zone that is not recognised is a flag too (FR-013). While a development has no unit chosen (R13) the
+    price, area and bedroom filters flag instead of excluding."""
     h, f, g = needs.get("home", {}), needs.get("finance", {}), needs.get("geography", {})
-    why = []
+    why: list[str] = []
+    unknown: list[str] = []
+    soft = why if not unchosen else unknown  # R13: unit-dependent filters only flag for an unchosen development
     if h.get("property_types") and l["property_type"] not in h["property_types"]:
         why.append(f"tipo {l['property_type']} fuera de tus tipos")
-    if h.get("min_area_m2") and l["area_m2"] and l["area_m2"] < h["min_area_m2"]:
-        why.append(f"{l['area_m2']:.0f} m² < {h['min_area_m2']}")
-    if h.get("min_bedrooms") and l["bedrooms"] is not None and l["bedrooms"] < h["min_bedrooms"]:
-        why.append(f"{l['bedrooms']} hab < {h['min_bedrooms']}")
-    if h.get("require_garden") and l["garden"] == 0:
-        why.append("sin jardín")
-    if h.get("min_plot_m2") and l["plot_m2"] and l["plot_m2"] < h["min_plot_m2"]:
-        why.append(f"parcela {l['plot_m2']:.0f} m² < {h['min_plot_m2']}")
-    if f.get("max_price") and l["price"] and l["price"] > f["max_price"]:
-        why.append(f"precio > {f['max_price']:,.0f} €")
-    if g.get("allow_zones") and l["zone_id"] not in g["allow_zones"]:
+    if h.get("min_area_m2"):
+        if not l["area_m2"]:
+            unknown.append("superficie desconocida")
+        elif l["area_m2"] < h["min_area_m2"]:
+            soft.append(f"{l['area_m2']:.0f} m² < {h['min_area_m2']}")
+    if h.get("min_bedrooms"):
+        if l["bedrooms"] is None:
+            unknown.append("habitaciones desconocidas")
+        elif l["bedrooms"] < h["min_bedrooms"]:
+            soft.append(f"{l['bedrooms']} hab < {h['min_bedrooms']}")
+    if h.get("require_garden"):
+        if l["garden"] is None:
+            unknown.append("jardín desconocido")
+        elif l["garden"] == 0:
+            why.append("sin jardín")
+    if h.get("min_plot_m2"):
+        if not l["plot_m2"]:
+            unknown.append("parcela desconocida")
+        elif l["plot_m2"] < h["min_plot_m2"]:
+            why.append(f"parcela {l['plot_m2']:.0f} m² < {h['min_plot_m2']}")
+    if f.get("max_price"):
+        if not l["price"]:
+            unknown.append("precio desconocido")
+        elif l["price"] > f["max_price"]:
+            soft.append(f"precio > {f['max_price']:,.0f} €")
+    if not l["zone_id"]:
+        unknown.append(f"zona no reconocida: \"{l.get('location_text') or ''}\"")
+    elif g.get("allow_zones") and l["zone_id"] not in g["allow_zones"]:
         why.append("zona fuera de tu lista")
-    return why
+    return why, unknown
 
 
 def _effective_savings(f: dict):
@@ -130,7 +170,7 @@ def build_context(conn, needs: dict) -> dict:
     rows = [dict(r) for r in conn.execute("SELECT * FROM listings WHERE merged_into IS NULL OR merged_into = ''")]
     by_zone_grp: dict[tuple, list] = {}
     for r in rows:
-        if r["price"] and r["area_m2"]:
+        if r["price"] and r["area_m2"] and r["zone_id"] and not unit_unchosen(r):  # zone-less listings have no median
             by_zone_grp.setdefault((r["zone_id"], type_group(r["property_type"])), []).append(r["price"] / r["area_m2"])
     min_n = needs.get("market", {}).get("min_listings_for_median", 5)
     medians = {k: median(v) for k, v in by_zone_grp.items() if len(v) >= min_n}
@@ -150,8 +190,12 @@ def evaluate(l: dict, ctx: dict, needs: dict, amen_data: dict | None, history: l
     flags: list[str] = []
     comps: dict[str, float | None] = {}
 
-    price_m2 = l["price"] / l["area_m2"] if l["price"] and l["area_m2"] else None
-    if price_m2 is None:
+    unchosen = unit_unchosen(l)  # R13: the stated price is the development's, not a unit price
+    price = None if unchosen else l["price"]
+    if unchosen:
+        flags.append(DEVELOPMENT_FLAG)
+    price_m2 = price / l["area_m2"] if price and l["area_m2"] else None
+    if price_m2 is None and not unchosen:
         flags.append("falta precio o superficie")
 
     # price vs benchmark
@@ -170,9 +214,13 @@ def evaluate(l: dict, ctx: dict, needs: dict, amen_data: dict | None, history: l
             flags.append("sin referencia de precio para esta zona")
 
     # affordability
+    if l.get("new_build") and l.get("new_build_origin") == "category":  # FR-033: only a flag to confirm, the costs use it
+        flags.append("obra nueva según la categoría de la alerta, confirma")
     sim = None
     savings = _effective_savings(f)
-    if l["price"] and savings is not None and f.get("tin_pct") is not None:
+    if unchosen:
+        comps["affordability"] = None
+    elif l["price"] and savings is not None and f.get("tin_pct") is not None:
         rates = mortgage.CostRates(**{k: v for k, v in (needs.get("costs") or {}).items()
                                       if k in mortgage.CostRates.__dataclass_fields__})
         sim = mortgage.simulate(l["price"], savings, f.get("years", 30), f["tin_pct"],
@@ -219,7 +267,7 @@ def evaluate(l: dict, ctx: dict, needs: dict, amen_data: dict | None, history: l
 
     # momentum: price drop since first seen
     drop = None
-    if len(history) >= 2 and history[0]:
+    if not unchosen and len(history) >= 2 and history[0]:
         drop = 1 - history[-1] / history[0]
         comps["momentum"] = clamp(drop / 0.10)
         if drop > 0:
@@ -235,6 +283,8 @@ def evaluate(l: dict, ctx: dict, needs: dict, amen_data: dict | None, history: l
             den += w[k]
     score = 100 * num / den if den else None
 
+    excluded, unknown_flags = _hard_filters(l, needs, unchosen)
+    flags += [x for x in unknown_flags if x not in flags]
     return {
         "price_m2": price_m2,
         "benchmark_m2": bench,
@@ -247,7 +297,7 @@ def evaluate(l: dict, ctx: dict, needs: dict, amen_data: dict | None, history: l
         "amenities": a_parts,
         "price_drop": drop,
         "flags": flags,
-        "excluded": _hard_filters(l, needs),
+        "excluded": excluded,
         "zone_score": zs.get("score"),
     }
 
@@ -260,10 +310,11 @@ def duplicate_pairs(rows: list[dict], needs: dict) -> dict[str, list[str]]:
     """R15: listing id -> ids of possible duplicates. Same zone, type and bedrooms; relative area and price
     differences |a-b|/max(a,b) within the configured limits (inclusive). Unknown values, no zone or
     development listings never match."""
-    cfg = {**DUPLICATE_DEFAULTS, **(needs.get("duplicates") or {})}
+    # a null sub-value means "not set": it falls back to the default instead of overriding it
+    cfg = {**DUPLICATE_DEFAULTS, **{k: v for k, v in (needs.get("duplicates") or {}).items() if v is not None}}
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
-        if (r.get("development") or not r["zone_id"] or r["property_type"] in UNKNOWN_TYPES or not r["area_m2"] or not r["price"] or r["bedrooms"] is None):
+        if (unit_unchosen(r) or not r["zone_id"] or r["property_type"] in UNKNOWN_TYPES or not r["area_m2"] or not r["price"] or r["bedrooms"] is None):
             continue
         groups.setdefault((r["zone_id"], r["property_type"], r["bedrooms"]), []).append(r)
     out: dict[str, list[str]] = {}
@@ -288,14 +339,85 @@ def _stored_flags(raw) -> list[str]:
     return [f for f in val if isinstance(f, str)] if isinstance(val, list) else []
 
 
+def _category_flags(raw_categories, conflict_rules: list[str]) -> list[str]:
+    """'Found via' flags from listings.categories (JSON list) and the rules behind any conflict (FR-031, FR-032)."""
+    try:
+        cats = json.loads(raw_categories) if raw_categories else []
+    except (TypeError, ValueError):
+        cats = []
+    cats = [c for c in cats if isinstance(c, str)] if isinstance(cats, list) else []
+    flags = []
+    known = [c for c in cats if c != "unknown"]
+    if known:
+        flags.append("encontrado vía: " + ", ".join(known))
+    if "unknown" in cats:
+        flags.append("encontrado vía: búsqueda desconocida")
+    if conflict_rules:
+        flags.append("reglas de categoría en conflicto: " + ", ".join(conflict_rules))
+    return flags
+
+
+def _conflict_rules(conn) -> dict[str, list[str]]:
+    """listing id -> rules (file order, no repeats) of the emails whose rules matched but disagreed."""
+    out: dict[str, list[str]] = {}
+    for r in conn.execute("SELECT s.listing_id, e.category_rules_matched FROM sightings s "
+                          "JOIN alert_emails e ON e.email_id = s.email_id "
+                          "WHERE e.category = 'unknown' AND e.category_rules_matched IS NOT NULL "
+                          "ORDER BY s.seen_at, s.email_id"):
+        try:
+            rules = json.loads(r["category_rules_matched"])
+        except (TypeError, ValueError):
+            continue
+        for rule in rules if isinstance(rules, list) else []:
+            if isinstance(rule, str) and rule not in out.setdefault(r["listing_id"], []):
+                out[r["listing_id"]].append(rule)
+    return out
+
+
+# Single definition of the price_history order (data-model "Extended: price_history"); main.py reuses it.
+HISTORY_ORDER = "day, (origin = 'alert_previous') DESC, rowid"
+
+
+def merge_targets(conn) -> dict[str, str]:
+    """Listing id -> final live target id for merged listings (chains resolved). Members of a cycle have no target
+    and are left out."""
+    into = {r["id"]: r["merged_into"] for r in conn.execute(
+        "SELECT id, merged_into FROM listings WHERE merged_into IS NOT NULL AND merged_into <> ''")}
+    out: dict[str, str] = {}
+    for lid in into:
+        seen, cur = {lid}, into[lid]
+        while cur in into and cur not in seen:
+            seen.add(cur)
+            cur = into[cur]
+        if cur not in into:
+            out[lid] = cur
+    return out
+
+
+def combined_history_ids(conn, lid: str) -> list[str]:
+    """The listing itself plus every listing merged into it, directly or through a chain (FR-018)."""
+    return [lid] + sorted(k for k, v in merge_targets(conn).items() if v == lid)
+
+
+def _price_is_user_owned(l: dict) -> bool:
+    try:
+        sources = json.loads(l.get("field_sources") or "{}")
+    except (TypeError, ValueError):
+        return False
+    return isinstance(sources, dict) and sources.get("price") in USER_ORIGINS
+
+
 def rank(conn, needs: dict) -> list[dict]:
     ctx = build_context(conn, needs)
     amen = {r["listing_id"]: json.loads(r["data"]) for r in conn.execute("SELECT * FROM amenities")}
-    hist: dict[str, list[float]] = {}
-    for r in conn.execute("SELECT listing_id, price FROM price_history "
-                          "ORDER BY day, (origin = 'alert_previous') DESC, rowid"):
-        hist.setdefault(r["listing_id"], []).append(r["price"])
     rows = [dict(r) for r in conn.execute("SELECT * FROM listings")]
+    # Once the price is the user's, the alert series no longer describes it (FR-007): ignore stored alert rows.
+    user_priced = {r["id"] for r in rows if _price_is_user_owned(r)}
+    hist: dict[str, list[float]] = {}
+    for r in conn.execute(f"SELECT listing_id, price, origin FROM price_history ORDER BY {HISTORY_ORDER}"):
+        if r["listing_id"] in user_priced and r["origin"] in ("alert", "alert_previous"):
+            continue
+        hist.setdefault(r["listing_id"], []).append(r["price"])
     live = [r for r in rows if not r.get("merged_into")]
     dups = duplicate_pairs(live, needs)
     # merge chains (A into B, B into C) resolve to the final target; a cycle ends the walk without a target
@@ -310,19 +432,21 @@ def rank(conn, needs: dict) -> list[dict]:
             cur = into[cur]
         if cur not in into:  # final target is a live listing (or absent); in a cycle every member is merged
             merged_urls.setdefault(cur, []).append(r["url"])
+    conflicts = _conflict_rules(conn)
     out = []
     for l in live:
         l.pop("raw", None)
         l["eval"] = evaluate(l, ctx, needs, amen.get(l["id"]), hist.get(l["id"], []))
         flags = l["eval"]["flags"]
         flags += [f"posible duplicado de {o}" for o in dups.get(l["id"], [])]
-        for f in _stored_flags(l.get("alert_flags")):
+        for f in _stored_flags(l.get("alert_flags")) + _category_flags(l.get("categories"), conflicts.get(l["id"], [])):
             if f not in flags:
                 flags.append(f)
         if l.get("availability") == "gone":  # a mark, not a hard filter (FR-019)
             flags.insert(0, "ya no disponible")
         l["merged_links"] = merged_urls.get(l["id"], [])
         l["days_seen"] = None
+        l["scoring_version"] = SCORING_VERSION
         out.append(l)
     out.sort(key=lambda x: (bool(x["eval"]["excluded"]), x.get("availability") == "gone",
                             -(x["eval"]["score"] or -1)))

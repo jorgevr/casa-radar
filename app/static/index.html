@@ -20,7 +20,7 @@ tr.ex td{opacity:.5}tr.gone td{color:var(--mut)}tr.gone .bar,tr.gone .pill{opaci
 input,select,textarea,button.b{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
 button.b{cursor:pointer}button.b.p{background:var(--acc);color:#fff;border-color:var(--acc)}textarea{width:100%;min-height:110px;font-family:ui-monospace,monospace;font-size:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}label{display:block;font-size:12px;color:var(--mut)}label input,label select{width:100%;margin-top:2px}
-.row2{display:flex;gap:10px;align-items:center;flex-wrap:wrap}ul.fl{margin:6px 0;padding-left:18px}.hide{display:none}.det td{white-space:normal;background:var(--bg)}
+.row2{display:flex;gap:10px;align-items:center;flex-wrap:wrap}ul.fl{margin:6px 0;padding-left:18px}.hide{display:none}.det td{white-space:normal;background:var(--bg)}.det a{color:var(--acc)}
 .kv{display:grid;grid-template-columns:auto 1fr;gap:2px 14px}h3{margin:14px 0 6px;font-size:13px}.scroll{overflow-x:auto}
 </style>
 </head>
@@ -32,6 +32,10 @@ button.b{cursor:pointer}button.b.p{background:var(--acc);color:#fff;border-color
 </header>
 <main id="main"></main>
 <script>
+// Must equal, character for character, the flag appended in app/scoring.py (new_build_origin == "category"); keep in sync.
+const errTxt=(pre,er)=>er instanceof TypeError?'Sin conexión con el servidor local.':pre+' (detalle: '+er.message+')';
+const renderWarn=er=>'Guardado, pero no se pudo actualizar la vista (detalle: '+er.message+'). Recarga la página.';
+const NB_FLAG='obra nueva según la categoría de la alerta, confirma';
 const $=(s,r=document)=>r.querySelector(s);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const eur=n=>n==null?'—':Math.round(n).toLocaleString('es-ES')+' €';
@@ -40,7 +44,7 @@ async function api(path,opt={}){const r=await fetch('/api'+path,{headers:opt.bod
   if(!r.ok){let m;try{m=(await r.json()).detail}catch{m=r.statusText}const er=new Error(m);er.status=r.status;throw er}return (r.headers.get('content-type')||'').includes('json')?r.json():r.text()}
 const COMP={price:'Precio vs referencia',affordability:'Hipoteca',neighbourhood:'Barrio',amenities:'Servicios',fit:'Encaje',momentum:'Bajada de precio'};
 const TABS={ranking:'Oportunidades',zonas:'Zonas',needs:'Necesidades',mortgage:'Hipoteca',data:'Datos'};
-let tab='ranking',showEx=false,open=null,needs=null,sortKey=null,sortDir=1;
+let tab='ranking',showEx=false,onlyNew=false,rankSeq=0,newBusy=false,open=null,needs=null,sortKey=null,sortDir=1;
 const parseDate=v=>{const m=/^(\d{4})-(\d{2})-(\d{2})(?![\d])/.exec(v||'');if(!m)return null;const y=+m[1],mo=+m[2],d=+m[3];if(y<1||mo<1||mo>12||d<1)return null;const leap=y%4===0&&(y%100!==0||y%400===0);const dim=[31,leap?29:28,31,30,31,30,31,31,30,31,30,31][mo-1];return d>dim?null:{y:m[1],mo:m[2],d:m[3]}};
 const fmtDate=v=>{const t=parseDate(v);return t?`${t.d}/${t.mo}/${t.y}`:'desconocido'};
 const dkey=v=>{const t=parseDate(v);return t?`${t.y}-${t.mo}-${t.d}`:null};
@@ -52,22 +56,55 @@ const GONE_FLAG='ya no disponible',RELISTED=/^vuelto a ver en una alerta el /;
 const isGone=l=>!!l&&l.availability==='gone';
 const relistedFlag=l=>((l&&l.eval&&l.eval.flags)||[]).find(f=>RELISTED.test(f))||null;
 const availBusy=new Set();
-const availError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de disponibilidad no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo cambiar la disponibilidad: '+er.message;
+const availError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de disponibilidad no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo cambiar la disponibilidad (detalle: '+er.message+')';
+const nbBusy=new Set(),mergeBusy=new Set();
+const nbError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Valor de obra nueva no válido.':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar obra nueva (detalle: '+er.message+')';
+const unitBusy=new Set();
+const DEV_LABEL='precio de promoción, no de una vivienda',ZONE_FLAG=/^zona no reconocida/;
+const unk=v=>v==null||v===''?'desconocido':esc(v);
+const tri=v=>v==null?'desconocido':(v?'sí':'no');
+const unitError=er=>er.status===404?'No se encontró el anuncio (puede haberse eliminado).':er.status===400?'Vivienda no válida (detalle: '+er.message+')':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar la vivienda (detalle: '+er.message+')';
+function unitBody(v){const num=t=>t.trim()===''?null:Number(t.trim().replace(',','.'));const b={};
+  const p=num(v.price),a=num(v.area_m2),r=v.bedrooms.trim();
+  if(p!==null){if(!Number.isFinite(p)||p<=0)return {err:'El precio debe ser un número mayor que 0.'};b.price=p}
+  if(a!==null){if(!Number.isFinite(a)||a<=0)return {err:'La superficie debe ser un número mayor que 0.'};b.area_m2=a}
+  if(r!==''){if(!/^\d+$/.test(r))return {err:'Las habitaciones deben ser un entero igual o mayor que 0.'};b.bedrooms=Number(r)}
+  return Object.keys(b).length?{body:b}:{err:'Rellena al menos un dato de la vivienda.'}}
+function attrBlock(l){const r=(k,v)=>`<span class="mut">${k}</span><span>${v}</span>`;
+  return `<div><h3>Características</h3><div class="kv">${r('Baños',unk(l.bathrooms))}${r('Planta',unk(l.floor))}${r('Ascensor',tri(l.elevator))}${r('Terraza',tri(l.terrace))}${r('Garaje',tri(l.garage))}${r('Piscina',tri(l.pool))}${r('Jardín',tri(l.garden))}${r('Ubicación',unk(l.location_text))}</div></div>`}
+function devBlock(l){if(!l.development)return '';const id=esc(l.id),i=(k,t,ph)=>`<label>${t}<input data-u="${k}" inputmode="decimal" placeholder="${esc(ph)}"></label>`;
+  return `<div><h3>Promoción</h3><p class="warn">${DEV_LABEL}: ${eur(l.price)}</p><p class="mut">Vivienda: ${unk(l.unit_description)}</p><div class="grid">${i('price','Precio (€)',l.price??'')}${i('area_m2','Superficie (m²)',l.area_m2??'')}${i('bedrooms','Habitaciones',l.bedrooms??'')}</div><div class="row2"><button class="b p" data-act="unit" data-id="${id}">Guardar vivienda elegida</button></div></div>`}
+const NB_ORIGIN={email:'según el email',category:'según la categoría de la alerta',user:'valor tuyo'};
+function nbBlock(l){const v=l.new_build,o=l.new_build_origin,id=esc(l.id);
+  const cur=v==null?'desconocido':(v?'obra nueva':'segunda mano');
+  const btn=(to,t,cls)=>`<button class="b ${cls||''}" data-act="nb" data-to="${to}" data-id="${id}">${t}</button>`;
+  let h=`<div><h3>Obra nueva</h3><div class="kv"><span class="mut">Estado</span><span>${cur}${o&&NB_ORIGIN[o]?` <span class="mut">(${NB_ORIGIN[o]})</span>`:''}</span></div>`;
+  if(o==='category')h+=`<p class="warn">${esc(NB_FLAG)}</p><div class="row2">${btn('true','Confirmar obra nueva','p')}${btn('false','Es segunda mano')}</div>`;
+  else h+=`<div class="row2">${btn('true','Marcar obra nueva')}${btn('false','Marcar segunda mano')}${o==='user'?btn('null','Quitar mi valor'):''}</div>`;
+  return h+'</div>'}
+// rules editor: pure helpers (tested with node)
+function cleanRules(rows){return rows.map(r=>({contains:String(r.contains??'').trim(),category:String(r.category??'').trim()}))}
+function rulesProblem(rows){const c=cleanRules(rows);for(let i=0;i<c.length;i++){if(!c[i].contains)return `La regla ${i+1} no tiene texto «contiene».`;if(!c[i].category)return `La regla ${i+1} no tiene categoría.`}return null}
+const catErr=er=>er.status===400?'Reglas no válidas (detalle: '+er.message+')':er.status===500?'El servidor no pudo guardar las reglas de categoría (detalle: '+er.message+')':er instanceof TypeError?'Sin conexión con el servidor local.':'No se pudo guardar (detalle: '+er.message+')';
+function catSearchRows(names){return names.map(n=>{const k=!n.category||n.category==='unknown';return `<tr><td>${esc(n.name)}</td><td>${k?'<span class="mut">sin categoría / desconocida</span>':esc(n.category)}</td><td class="n">${esc(n.emails)}</td></tr>`}).join('')}
 function nav(){$('#nav').innerHTML=Object.entries(TABS).map(([k,v])=>`<button class="${k===tab?'on':''}" data-t="${k}">${v}</button>`).join('');
   $('#nav').onclick=e=>{if(e.target.dataset.t){tab=e.target.dataset.t;render()}}}
 const bar=v=>v==null?'<span class="mut">—</span>':`<span class="bar"><i style="width:${Math.round(v*100)}%"></i></span>${Math.round(v*100)}`;
 function toast(m,bad){const t=document.createElement('div');t.textContent=m;t.style.cssText=`position:fixed;bottom:18px;right:18px;padding:10px 14px;border-radius:8px;background:var(--card);border:1px solid var(--line);color:var(--${bad?'bad':'ink'});z-index:9`;document.body.append(t);setTimeout(()=>t.remove(),4000)}
 
-async function renderRanking(){
-  const L=await api('/listings');needs=await api('/needs');
+const NEW_EMPTY='No hay anuncios nuevos desde la última sincronización o importación.';
+async function fetchRanking(){const my=++rankSeq;const L=await api('/listings'+(onlyNew?'?new_since_last_run=true':''));const N=await api('/needs');return {L,N,stale:()=>my!==rankSeq}}
+async function renderRanking(pre){
+  const D=pre||await fetchRanking();if(D.stale())return;const L=D.L;needs=D.N;
   const vis=sortRows(L).filter(l=>showEx||(!l.eval.excluded.length&&l.status!=='discarded'));
-  $('#stat').textContent=`${L.length} anuncios · ${L.filter(l=>!l.eval.excluded.length).length} cumplen tus filtros`;
-  let h=`<div class="row2" style="margin-bottom:10px"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ex" ${showEx?'checked':''} style="width:auto"> mostrar descartados por filtros</label><a href="/api/export.csv" class="mut">exportar CSV</a></div>`;
-  if(!L.length)h+=`<div class="card">Aún no hay anuncios. Ve a <b>Datos</b> para importar un CSV, añadir uno a mano o lanzar la búsqueda de Idealista.</div>`;
+  $('#stat').textContent=`${L.length} anuncios · ${L.filter(l=>!l.eval.excluded.length).length} cumplen tus filtros${onlyNew?' (solo nuevos)':''}`;
+  let h=`<div class="row2" style="margin-bottom:10px"><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="ex" ${showEx?'checked':''} style="width:auto"> mostrar descartados por filtros</label><label style="display:flex;gap:6px;align-items:center"><input type="checkbox" id="nw" ${onlyNew?'checked':''} style="width:auto"> Solo nuevos desde la última sincronización/importación</label><a href="/api/export.csv" class="mut">exportar CSV</a></div>`;
+  if(!L.length&&onlyNew)h+=`<div class="card">${NEW_EMPTY}</div>`;
+  else if(!L.length)h+=`<div class="card">Aún no hay anuncios. Ve a <b>Datos</b> para importar un CSV, añadir uno a mano o lanzar la búsqueda de Idealista.</div>`;
   h+=`<div class="scroll"><table><thead><tr><th class="sort" data-s="" title="Orden por score">Score${sortKey?'':' ▼'}</th><th>Zona</th><th>Tipo</th><th class="n">Precio</th><th class="n">m²</th><th class="n">€/m²</th><th class="n">vs ref.</th><th class="n">Hab</th><th class="n">Esfuerzo</th><th>Estado</th><th class="sort" data-s="published_at">Publicado${arrow('published_at')}</th><th class="sort" data-s="price_updated_at">Actualizado${arrow('price_updated_at')}</th></tr></thead><tbody>`;
   for(const l of vis){const e=l.eval,m=e.mortgage;
     h+=`<tr class="row ${e.excluded.length?'ex':''}${isGone(l)?' gone':''}" data-id="${esc(l.id)}"><td>${e.score==null?'<span class="mut">—</span>':bar(e.score/100)}${e.coverage<.6?' <span class="warn" title="Poca cobertura de datos">⚠</span>':''}</td>
-    <td>${esc(l.zone_id)}</td><td>${esc(l.property_type)}</td><td class="n">${eur(l.price)}</td><td class="n">${l.area_m2??'—'}</td><td class="n">${eur(e.price_m2)}</td>
+    <td>${esc(l.zone_id)}</td><td>${esc(l.property_type)}</td><td class="n">${eur(l.price)}${l.development?` <span class="mut" title="${DEV_LABEL}">(promoción)</span>`:''}</td><td class="n">${l.area_m2??'—'}</td><td class="n">${eur(e.price_m2)}</td>
     <td class="n ${e.discount_vs_benchmark>0?'good':e.discount_vs_benchmark<0?'bad':''}">${e.discount_vs_benchmark==null?'—':(e.discount_vs_benchmark>0?'−':'+')+pct(Math.abs(e.discount_vs_benchmark))}</td>
     <td class="n">${l.bedrooms??'—'}</td><td class="n ${m&&m.effort_ratio>needs.finance.max_effort?'bad':''}">${m?pct(m.effort_ratio):'—'}</td><td><span class="pill">${esc(l.status)}</span>${isGone(l)?` <span class="pill">${GONE_FLAG}</span>`:''}${relistedFlag(l)?` <span class="warn">${esc(relistedFlag(l))}</span>`:''}</td><td>${fmtDate(l.published_at)}</td><td>${fmtDate(l.price_updated_at)}</td></tr>`;
     if(open===l.id)h+=`<tr class="det"><td colspan="12">${detail(l)}</td></tr>`}
@@ -75,17 +112,43 @@ async function renderRanking(){
   $('thead').onclick=e=>{const th=e.target.closest('th[data-s]');if(!th)return;const k=th.dataset.s;
     if(!k){sortKey=null}else if(sortKey===k){sortDir=-sortDir}else{sortKey=k;sortDir=1}renderRanking()};
   const ph=$('#ph');if(ph){const id=open;api('/listings/'+encodeURIComponent(id)+'/price-history').then(H=>{if(open===id&&$('#ph'))$('#ph').innerHTML=priceHist(H,L.find(x=>x.id===id))}).catch(()=>{if(open===id&&$('#ph'))$('#ph').innerHTML='<span class="bad">No se pudo cargar el historial de precios.</span>'})}
+  $('#nw').onchange=async e=>{const cb=e.target;if(newBusy){cb.checked=onlyNew;return}newBusy=true;cb.disabled=true;const prev=onlyNew;onlyNew=cb.checked;let d;
+    try{d=await fetchRanking()}
+    catch(err){if(onlyNew!==prev){onlyNew=prev;cb.checked=prev}newBusy=false;cb.disabled=false;toast(errTxt('No se pudo aplicar el filtro de nuevos',err),1);return}
+    try{await renderRanking(d)}catch(err){toast(errTxt('No se pudo mostrar la lista',err),1)}
+    finally{newBusy=false;cb.disabled=false}};
   $('#ex').onchange=e=>{showEx=e.target.checked;renderRanking()};
   $('tbody').onclick=async e=>{const tr=e.target.closest('tr.row');if(tr){open=open===tr.dataset.id?null:tr.dataset.id;renderRanking();return}
     const b=e.target.closest('button[data-act]');if(!b)return;const id=b.dataset.id;
     if(b.dataset.act==='avail'){if(availBusy.has(id))return;availBusy.add(id);b.disabled=true;
-      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{availability:b.dataset.to}});availBusy.delete(id);toast(b.dataset.to==='gone'?'Marcado como ya no disponible':'Marca deshecha');await renderRanking()}
-      catch(err){availBusy.delete(id);b.disabled=false;toast(availError(err),1)}return}
-    if(b.dataset.act==='merge'){const into=b.dataset.into;if(!confirm('¿Fusionar este anuncio con '+into+'? Se tratarán como el mismo inmueble.'))return;
-      try{await api('/listings/'+encodeURIComponent(id)+'/merge',{method:'POST',body:{into}});toast('Anuncios fusionados');renderRanking()}
-      catch(err){toast(err.status===404?'No se encontró uno de los anuncios (puede haberse eliminado).':err.status===409?'No se puede fusionar: crearía un ciclo de fusiones.':err.status===400?'Petición de fusión no válida.':'No se pudo fusionar: '+err.message,1)}return}
+      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{availability:b.dataset.to}})}
+      catch(err){availBusy.delete(id);b.disabled=false;toast(availError(err),1);return}
+      availBusy.delete(id);toast(b.dataset.to==='gone'?'Marcado como ya no disponible':'Marca deshecha');
+      try{await renderRanking()}catch(err){b.disabled=false;toast(renderWarn(err),1)}
+      return}
+    if(b.dataset.act==='nb'){if(nbBusy.has(id))return;nbBusy.add(id);
+      document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=true);
+      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{new_build:JSON.parse(b.dataset.to)}})}
+      catch(err){nbBusy.delete(id);document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=false);toast(nbError(err),1);return}
+      nbBusy.delete(id);toast('Obra nueva actualizada');
+      try{await renderRanking()}catch(err){document.querySelectorAll('button[data-act="nb"]').forEach(x=>x.disabled=false);toast(renderWarn(err),1)}
+      return}
+    if(b.dataset.act==='unit'){if(unitBusy.has(id))return;const box=b.parentElement.parentElement;
+      const v={};box.querySelectorAll('input[data-u]').forEach(x=>v[x.dataset.u]=x.value);const u=unitBody(v);
+      if(u.err){toast(u.err,1);return}unitBusy.add(id);b.disabled=true;
+      try{await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:u.body})}
+      catch(err){unitBusy.delete(id);b.disabled=false;toast(unitError(err),1);return}
+      unitBusy.delete(id);toast('Vivienda guardada');
+      try{await renderRanking()}catch(err){b.disabled=false;toast(renderWarn(err),1)}
+      return}
+    if(b.dataset.act==='merge'){const into=b.dataset.into;if(mergeBusy.has(id))return;if(!confirm('¿Fusionar este anuncio con '+into+'? Se tratarán como el mismo inmueble.'))return;
+      mergeBusy.add(id);b.disabled=true;
+      try{await api('/listings/'+encodeURIComponent(id)+'/merge',{method:'POST',body:{into}});mergeBusy.delete(id);toast('Anuncios fusionados');b.disabled=false;try{await renderRanking()}catch(err){toast(renderWarn(err),1)}}
+      catch(err){mergeBusy.delete(id);b.disabled=false;toast(err.status===404?'No se encontró uno de los anuncios (puede haberse eliminado).':err.status===409?'No se puede fusionar: crearía un ciclo de fusiones.':err.status===400?'Petición de fusión no válida.':'No se pudo fusionar (detalle: '+err.message+')',1)}return}
     try{if(b.dataset.act==='amen'){b.textContent='Consultando OSM…';await api('/listings/'+encodeURIComponent(id)+'/amenities',{method:'POST'})}
-      else await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{status:b.dataset.act}});renderRanking()}catch(err){toast(err.message,1);b.textContent='Reintentar'}}}
+      else await api('/listings/'+encodeURIComponent(id),{method:'PATCH',body:{status:b.dataset.act}})}
+    catch(err){toast(errTxt('No se pudo completar la acción',err),1);b.textContent='Reintentar';return}
+    try{await renderRanking()}catch(err){toast(renderWarn(err),1)}}}
 function priceHist(H,l){if(!H.length)return '<span class="mut">sin historial de precios</span>';
   const rows=H.map(r=>`<span class="mut">${r.origin==='alert_previous'?'antes del '+fmtDate(r.day):fmtDate(r.day)}</span><span>${eur(r.price)}</span>`).join('');
   return `<div class="kv">${rows}<span class="mut"><b>Actual</b></span><span><b>${eur(l.price)}</b></span></div>`}
@@ -95,13 +158,16 @@ function detail(l){const e=l.eval,m=e.mortgage;
   <p class="mut">Referencia de precio: ${e.benchmark_m2?eur(e.benchmark_m2)+'/m² ('+esc(e.benchmark_source)+')':'ninguna'} · cobertura de datos ${pct(e.coverage)}</p></div>`;
   if(m)h+=`<div><h3>Hipoteca (estimación)</h3><div class="kv"><span class="mut">Impuestos + gastos</span><span>${eur(m.taxes+m.other_costs)}</span><span class="mut">Préstamo (LTV ${pct(m.ltv)})</span><span>${eur(m.loan)}</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span>
     ${m.stress.map(s=>`<span class="mut">Tipo ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio)+')':''}</span>`).join('')}</div></div>`;
+  h+=attrBlock(l)+devBlock(l)+nbBlock(l);
   const sg=l.sightings||[];
-  h+=`<p class="mut">Fuente: ${sg.length?'Idealista (email de alerta)':l.source==='idealista'?'Idealista':esc(l.source||'desconocido')} · visto por primera vez: ${esc(l.first_seen||'desconocido')} · última vez: ${esc(l.last_seen||'desconocido')}</p>`;
+  const srcLine=`<p class="mut" style="margin-top:0">Fuente: ${sg.length?'Idealista (email de alerta)':l.source==='idealista'?'Idealista':esc(l.source||'desconocido')} · visto por primera vez: ${esc(l.first_seen||'desconocido')} · última vez: ${esc(l.last_seen||'desconocido')}</p>`;
+  h+=`<div>${srcLine}`;
   if(sg.length)h+=`<h3>Emails de alerta</h3><ul class="fl">${sg.map(x=>`<li><span class="mut">${esc(fmtDate(x.alert_date))}</span> ${esc(x.subject||'sin asunto')}</li>`).join('')}</ul>`;
-  h+=`<h3>Historial de precios</h3><div id="ph"><span class="mut">Cargando…</span></div>`;
+  h+=`</div><div><h3>Historial de precios</h3><div id="ph"><span class="mut">Cargando…</span></div></div>`;
   const a=Object.entries(e.amenities);h+=`<div><h3>Servicios cercanos (OSM)</h3>${a.length?`<div class="kv">${a.map(([k,v])=>`<span class="mut">${esc(k)}</span><span>${v.nearest_m} m</span>`).join('')}</div>`:'<span class="mut">sin calcular</span>'}</div></div>`;
   if(e.excluded.length)h+=`<h3>No cumple tus filtros</h3><ul class="fl bad">${e.excluded.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>`;
-  if(e.flags.length)h+=`<h3>Avisos</h3><ul class="fl warn">${e.flags.map(x=>{const d=DUP.exec(x);return `<li>${esc(x)}${d?` <button class="b" data-act="merge" data-id="${esc(l.id)}" data-into="${esc(d[1])}">Fusionar con…</button>`:''}</li>`}).join('')}</ul>`;
+  const fl=e.flags.filter(x=>x!==NB_FLAG);
+  if(fl.length)h+=`<h3>Avisos</h3><ul class="fl warn">${fl.map(x=>{const d=DUP.exec(x);return `<li>${esc(x)}${ZONE_FLAG.test(x)?' <span class="mut">Añade esta zona a config/zone_aliases.yaml para reconocerla.</span>':''}${d?` <button class="b" data-act="merge" data-id="${esc(l.id)}" data-into="${esc(d[1])}">Fusionar con…</button>`:''}</li>`}).join('')}</ul>`;
   h+=`<div class="row2" style="margin-top:8px"><button class="b p" data-act="shortlist" data-id="${esc(l.id)}">★ Preseleccionar</button><button class="b" data-act="discarded" data-id="${esc(l.id)}">Descartar</button>${isGone(l)?`<button class="b" data-act="avail" data-to="active" data-id="${esc(l.id)}">Deshacer</button>`:`<button class="b" data-act="avail" data-to="gone" data-id="${esc(l.id)}">Marcar como ya no disponible</button>`}<button class="b" data-act="amen" data-id="${esc(l.id)}" ${l.lat==null?'disabled title="sin coordenadas"':''}>Calcular servicios (OSM)</button></div>`;return h}
 
 async function renderZones(){
@@ -112,7 +178,8 @@ async function renderZones(){
     ${keys.map(k=>`<td><input data-k="${k}" size="7" value="${z.indicators[k]??''}"></td>`).join('')}<td class="mut">${z.indicators.rent_m2_flat?z.indicators.rent_m2_flat.toFixed(1):'—'} / ${z.indicators.rent_m2_house?z.indicators.rent_m2_house.toFixed(1):'—'}</td><td><button class="b">Guardar</button></td></tr>`}
   h+='</tbody></table></div>';$('#main').innerHTML=h;$('#stat').textContent=`${Z.length} zonas`;
   $('tbody').onclick=async e=>{const b=e.target.closest('button');if(!b)return;const tr=b.closest('tr');const body={};tr.querySelectorAll('input').forEach(i=>body[i.dataset.k]=i.value.trim()===''?null:parseFloat(i.value.replace(',','.')));
-    try{await api('/zones/'+tr.dataset.z+'/indicators',{method:'PUT',body});toast('Guardado');renderZones()}catch(err){toast(err.message,1)}}}
+    try{await api('/zones/'+tr.dataset.z+'/indicators',{method:'PUT',body})}catch(err){toast(errTxt('No se pudo guardar',err),1);return}
+    toast('Guardado');try{await renderZones()}catch(err){toast(renderWarn(err),1)}}}
 
 async function renderNeeds(){
   needs=await api('/needs');const f=needs.finance,h=needs.home;
@@ -129,13 +196,13 @@ async function renderNeeds(){
   <button class="b p" id="save">Guardar</button></div>`;
   $('#save').onclick=async()=>{document.querySelectorAll('[data-p]').forEach(i=>{const p=i.dataset.p,k=i.dataset.k;let v=i.value;
       if(i.dataset.bool)v=v==='true';else if(i.dataset.list)v=v.split(',').map(s=>s.trim()).filter(Boolean);else v=v===''?null:parseFloat(v);needs[p][k]=v});
-    try{await api('/needs',{method:'PUT',body:needs});toast('Necesidades guardadas')}catch(err){toast(err.message,1)}}}
+    try{await api('/needs',{method:'PUT',body:needs});toast('Necesidades guardadas')}catch(err){toast(errTxt('No se pudo guardar',err),1)}}}
 
 function renderMortgage(){
   $('#main').innerHTML=`<div class="card"><div class="grid"><label>Precio (€)<input id="p" type="number" value="450000"></label><label>Ahorros (€)<input id="s" type="number" value="120000"></label><label>Plazo (años)<input id="y" type="number" value="30"></label><label>TIN %<input id="t" type="number" step="0.01" value="3"></label><label>Ingresos netos/mes<input id="i" type="number"></label><label>Obra nueva<select id="n"><option value="false">No</option><option value="true">Sí</option></select></label></div>
   <p><button class="b p" id="go">Calcular</button></p><div id="out"></div></div><p class="mut">Estimación propia (amortización francesa, impuestos y gastos de config/needs.yaml). No sustituye la simulación del banco ni la calculadora del Notariado.</p>`;
   $('#go').onclick=async()=>{const q=new URLSearchParams({price:$('#p').value,savings:$('#s').value,years:$('#y').value,tin:$('#t').value,new_build:$('#n').value});if($('#i').value)q.set('income',$('#i').value);
-    try{const m=await api('/mortgage?'+q);$('#out').innerHTML=`<div class="kv"><span class="mut">Impuestos</span><span>${eur(m.taxes)}</span><span class="mut">Otros gastos</span><span>${eur(m.other_costs)}</span><span class="mut">Préstamo</span><span>${eur(m.loan)} (LTV ${pct(m.ltv)})</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span><span class="mut">Ahorro mínimo para entrar</span><span>${eur(m.min_savings_needed)} ${m.savings_shortfall>0?`<span class="bad">(faltan ${eur(m.savings_shortfall)})</span>`:''}</span>${m.effort_ratio!=null?`<span class="mut">Esfuerzo</span><span>${pct(m.effort_ratio,1)}</span>`:''}${m.stress.map(s=>`<span class="mut">Con TIN ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio,1)+')':''}</span>`).join('')}</div>`}catch(err){toast(err.message,1)}}}
+    try{const m=await api('/mortgage?'+q);$('#out').innerHTML=`<div class="kv"><span class="mut">Impuestos</span><span>${eur(m.taxes)}</span><span class="mut">Otros gastos</span><span>${eur(m.other_costs)}</span><span class="mut">Préstamo</span><span>${eur(m.loan)} (LTV ${pct(m.ltv)})</span><span class="mut">Cuota</span><span><b>${eur(m.monthly)}</b>/mes</span><span class="mut">Intereses totales</span><span>${eur(m.total_interest)}</span><span class="mut">Ahorro mínimo para entrar</span><span>${eur(m.min_savings_needed)} ${m.savings_shortfall>0?`<span class="bad">(faltan ${eur(m.savings_shortfall)})</span>`:''}</span>${m.effort_ratio!=null?`<span class="mut">Esfuerzo</span><span>${pct(m.effort_ratio,1)}</span>`:''}${m.stress.map(s=>`<span class="mut">Con TIN ${s.tin_pct.toFixed(1)}%</span><span>${eur(s.monthly)}/mes ${s.effort_ratio?'('+pct(s.effort_ratio,1)+')':''}</span>`).join('')}</div>`}catch(err){toast(errTxt('No se pudo calcular',err),1)}}}
 
 const plural=(n,one,many)=>`${n} ${n===1?one:many}`;
 const readB64=f=>new Promise((ok,ko)=>{const r=new FileReader();r.onload=()=>ok(String(r.result).slice(String(r.result).indexOf(',')+1));r.onerror=()=>ko(new Error('No se pudo leer el archivo '+f.name));r.readAsDataURL(f)});
@@ -150,17 +217,70 @@ async function importAlerts(){
   try{const files=[];for(const f of fs)files.push({name:f.name,content_base64:await readB64(f)});
     const s=await api('/alerts/import',{method:'POST',body:{files}});
     o.innerHTML=importLines(s);$('#af').value='';
-  }catch(e){o.innerHTML=`<span class="bad">No se pudo importar: ${esc(e instanceof TypeError?'sin conexión con el servidor local':e.message)}</span>`}
+  }catch(e){o.innerHTML=`<span class="bad">${esc(errTxt('No se pudo importar',e))}</span>`}
   finally{b.disabled=false}}
 
+let catRules=[],catSaving=false;
+function drawCat(names){const el=$('#cat');if(!el)return;
+  el.innerHTML=`<h3 style="margin-top:0">Categorías de alerta</h3><p class="mut">Si el nombre de la búsqueda de un email contiene el texto de una regla, el email recibe esa categoría. Una categoría <code>new-build</code> marca el anuncio como obra nueva pendiente de confirmar. Al guardar se recalculan las categorías de todos los emails.</p>
+  <table><thead><tr><th>Contiene</th><th>Categoría</th><th></th></tr></thead><tbody>${catRules.length?catRules.map((r,i)=>`<tr data-i="${i}"><td><input data-f="contains" value="${esc(r.contains)}" style="width:100%"></td><td><input data-f="category" value="${esc(r.category)}"></td><td><button class="b" data-ca="del">Quitar</button></td></tr>`).join(''):'<tr><td colspan="3" class="mut">Sin reglas.</td></tr>'}</tbody></table>
+  <div class="row2" style="margin-top:8px"><button class="b" data-ca="add">Añadir regla</button><button class="b p" data-ca="save" ${catSaving?'disabled':''}>Guardar reglas</button><span id="catmsg"></span></div>
+  <h3>Búsquedas guardadas</h3>${names.length?`<div class="scroll"><table><thead><tr><th>Búsqueda</th><th>Categoría</th><th class="n">Emails</th></tr></thead><tbody>${catSearchRows(names)}</tbody></table></div>`:'<span class="mut">Aún no hay emails con nombre de búsqueda.</span>'}`}
+let catNames=[];
+async function loadCat(){const el=$('#cat');if(!el)return;
+  try{const c=await api('/categories');catRules=c.rules.map(r=>({contains:r.contains,category:r.category}));catNames=c.search_names;drawCat(catNames)}
+  catch(er){if($('#cat'))$('#cat').innerHTML=`<h3 style="margin-top:0">Categorías de alerta</h3><span class="bad">${esc(errTxt('No se pudieron cargar las categorías',er))}</span>`}}
+async function catClick(e){const b=e.target.closest('button[data-ca]');if(!b||catSaving)return;const a=b.dataset.ca;
+  if(a==='add'){catRules.push({contains:'',category:''});drawCat(catNames);return}
+  if(a==='del'){catRules.splice(+b.closest('tr').dataset.i,1);drawCat(catNames);return}
+  if(a==='save'){const msg=$('#catmsg'),pr=rulesProblem(catRules);if(pr){msg.innerHTML=`<span class="warn">${esc(pr)}</span>`;return}
+    catSaving=true;b.disabled=true;msg.innerHTML='<span class="mut">Guardando…</span>';
+    const sent=JSON.stringify(cleanRules(catRules));
+    try{await api('/categories',{method:'PUT',body:{rules:JSON.parse(sent)}});catSaving=false;toast('Reglas guardadas; categorías recalculadas');
+      if(JSON.stringify(cleanRules(catRules))===sent)await loadCat();
+      else{const m=$('#catmsg');if(m)m.innerHTML='<span class="warn">Reglas guardadas, pero hay cambios nuevos sin guardar.</span>'}}
+    catch(er){catSaving=false;const m=$('#catmsg');if(m)m.innerHTML=`<span class="bad">${esc(catErr(er))}</span>`}
+    finally{catSaving=false;b.disabled=false;const sb=$('#cat button[data-ca="save"]');if(sb)sb.disabled=false}}}
+let emSeq=0,emBusy=false,emSummary='';
+function drawEm(rows,errs=[],bothFailed=false){const el=$('#em');if(!el)return;
+  el.innerHTML=`<h3 style="margin-top:0">Emails no importados</h3><p class="mut">Emails guardados que fallaron o fueron rechazados al leerlos. «Reprocesar» vuelve a leer solo los fallidos con la versión actual del lector.</p>
+  <div class="row2"><button class="b p" data-em="re" ${emBusy?'disabled':''}>Reprocesar</button><button class="b" data-em="reload">Recargar</button></div><div id="emsum" style="margin:8px 0">${emSummary}</div>
+  ${errs.length?`<div style="margin:8px 0">${errs.map(x=>`<div class="bad">${esc(x)}</div>`).join('')}<button class="b" data-em="reload" style="margin-top:6px">Reintentar</button></div>`:''}
+  ${bothFailed?'':rows.length?`<div class="scroll"><table><thead><tr><th>Fecha</th><th>Asunto</th><th>Motivo</th><th>Estado</th><th></th></tr></thead><tbody>${rows.map(r=>`<tr><td>${esc((r.alert_date||'').slice(0,10)||'sin fecha')}</td><td>${esc(r.subject||'(sin asunto)')}</td><td>${esc(r.reason||'')}</td><td>${r.outcome==='failed'?'Fallido':r.outcome==='rejected'?'Rechazado':esc(r.outcome)}</td><td><a href="/api/alerts/emails/${encodeURIComponent(r.email_id)}/raw" download>Descargar original</a></td></tr>`).join('')}</tbody></table></div>`:'<span class="mut">No hay emails fallidos ni rechazados.</span>'}`}
+async function loadEm(){const el=$('#em');if(!el)return;const my=++emSeq;
+  const LISTS=[['failed','fallidos'],['rejected','rechazados']];
+  const res=await Promise.all(LISTS.map(([o,n])=>api('/alerts/emails?outcome='+o).then(v=>({ok:1,v}),er=>({ok:0,msg:er instanceof TypeError?'Lista de emails '+n+': '+errTxt('',er):errTxt('No se pudo cargar la lista de emails '+n,er)}))));
+  if(my!==emSeq||!$('#em'))return;
+  const errs=res.filter(r=>!r.ok).map(r=>r.msg);
+  try{
+    const rows=[].concat(...res.filter(r=>r.ok).map(r=>r.v)).sort((a,b)=>String(b.alert_date||'')<String(a.alert_date||'')?-1:String(b.alert_date||'')>String(a.alert_date||'')?1:0);
+    drawEm(rows,errs,errs.length===res.length)}
+  catch(er){$('#em').innerHTML=`<span class="bad">${esc(renderWarn(er))}</span>`}}
+async function emClick(e){const b=e.target.closest('button[data-em]');if(!b)return;
+  if(b.dataset.em==='reload'){if(!emBusy)loadEm();return}
+  if(emBusy)return;
+  emBusy=true;b.disabled=true;emSummary='<span class="mut">Reprocesando…</span>';const sm=$('#emsum');if(sm)sm.innerHTML=emSummary;
+  let s=null;
+  try{s=await api('/alerts/reprocess',{method:'POST',body:{scope:'failed'}})}
+  catch(er){emSummary=`<span class="bad">${esc(errTxt('No se pudo reprocesar',er))}</span>`}
+  finally{emBusy=false;const rb=$('#em button[data-em="re"]');if(rb)rb.disabled=false}
+  if(s){try{emSummary=importLines(s)}catch(er){emSummary=`<span class="bad">${esc(renderWarn(er))}</span>`}}
+  const sm2=$('#emsum');if(sm2)sm2.innerHTML=emSummary;
+  await loadEm()}
 function renderData(){
-  $('#main').innerHTML=`<div class="card"><h3 style="margin-top:0">Importar emails de alerta</h3><p class="mut">Archivos <code>.eml</code> o <code>.mbox</code> guardados de las alertas de Idealista. Se leen en tu navegador y se envían solo a este servidor local.</p><div class="row2"><input type="file" id="af" accept=".eml,.mbox" multiple><button class="b p" id="ab">Importar emails</button></div><div id="ao" style="margin-top:10px"></div></div>
+  $('#main').innerHTML=`<div class="card" id="cat"><span class="mut">Cargando categorías…</span></div>
+  <div class="card" id="em"><span class="mut">Cargando emails…</span></div>
+  <div class="card"><h3 style="margin-top:0">Importar emails de alerta</h3><p class="mut">Archivos <code>.eml</code> o <code>.mbox</code> guardados de las alertas de Idealista. Se leen en tu navegador y se envían solo a este servidor local.</p><div class="row2"><input type="file" id="af" accept=".eml,.mbox" multiple><button class="b p" id="ab">Importar emails</button></div><div id="ao" style="margin-top:10px"></div></div>
   <div class="card"><h3 style="margin-top:0">Idealista (vía idealista-mcp)</h3><p class="mut">Requiere config/providers.yaml y tus credenciales de la API de Idealista. Argumentos opcionales como JSON, p. ej. <code>{"center":"40.3458,-3.8249","distance":3000}</code>.</p><div class="row2"><input id="ia" style="flex:1" placeholder="{} (usa los de providers.yaml)"><button class="b p" id="ib">Buscar e importar</button></div></div>
   <div class="card"><h3 style="margin-top:0">Anuncios (CSV)</h3><p class="mut">Columnas: url,title,property_type,price,area_m2,bedrooms,bathrooms,plot_m2,garden,new_build,lat,lon,municipality,district,neighborhood</p><textarea id="lc" placeholder="pega aquí el CSV"></textarea><p><button class="b p" id="lb">Importar anuncios</button></p></div>
   <div class="card"><h3 style="margin-top:0">Añadir un anuncio a mano</h3><div class="grid">${['url','title','price','area_m2','bedrooms','plot_m2','lat','lon','municipality','district'].map(k=>`<label>${k}<input data-m="${k}"></label>`).join('')}<label>property_type<select data-m="property_type"><option>chalet</option><option>adosado</option><option>pareado</option><option>bajo</option><option>piso</option><option>atico</option></select></label><label>garden<select data-m="garden"><option value="">?</option><option value="1">sí</option><option value="0">no</option></select></label></div><p><button class="b p" id="mb">Añadir</button></p></div>
   <div class="card"><h3 style="margin-top:0">Indicadores (CSV)</h3><p class="mut">Columnas: zone,key,value[,source,year]. Ejemplo: <code>madrid/chamberi,notary_price_m2_flat,6120,Notariado,2026</code></p><textarea id="ic"></textarea><p><button class="b p" id="ib2">Importar indicadores</button></p></div>`;
-  const go=(id,fn)=>$(id).onclick=async()=>{try{toast(await fn())}catch(e){toast(e.message,1)}};
+  const go=(id,fn)=>$(id).onclick=async()=>{try{toast(await fn())}catch(e){toast(errTxt('No se pudo importar',e),1)}};
   $('#ab').onclick=importAlerts;
+  $('#cat').onclick=catClick;
+  $('#cat').oninput=e=>{const i=e.target.closest('input[data-f]');if(i)catRules[+i.closest('tr').dataset.i][i.dataset.f]=i.value};
+  $('#em').onclick=emClick;
+  loadCat();loadEm();
   go('#ib',async()=>{const t=$('#ia').value.trim();const r=await api('/providers/idealista/search',{method:'POST',body:t?JSON.parse(t):{}});return r.imported+' anuncios importados'});
   go('#lb',async()=>{const r=await api('/listings/import-csv',{method:'POST',body:$('#lc').value});return r.imported+' anuncios importados'});
   go('#ib2',async()=>{const r=await api('/indicators/import-csv',{method:'POST',body:$('#ic').value});return r.imported+' indicadores importados'});

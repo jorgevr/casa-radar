@@ -1,198 +1,242 @@
-# Agent Fleet — casa-radar
+# Orca Agent Fleet — anomalia-platform
 
-> **Operational brief for the Orca coordinator agent.** Give this file to the coordinator. It
-> assigns work to worker agents and passes each one the role section it needs (§3). Rules here never
-> override `.specify/memory/constitution.md`; where they seem to conflict, the constitution wins and
-> the coordinator stops and asks the user.
+\*\*Design doc for humans.\*\* Orca agents do not load this file directly. The operational instructions they execute live in [`AGENTS.md`](http://AGENTS.md) / [`CLAUDE.md`](http://CLAUDE.md) at the workspace root and in individual service repos.
+
+---
 
 ## 1. Principles
 
-1. **Procedural contracts over personas.** Each role has inputs, steps, outputs and a gate. No
-   roleplay.
-2. **Deterministic checks before LLM review.** Whatever a command can decide (§4) is decided by the
-   command; a failing gate stops the loop before any review tokens are spent.
-3. **Author ≠ reviewer.** The Reviewer runs in a fresh, stateless session that sees only the spec,
-   the task and the diff — ideally on a different model family from the Developer.
-4. **Tiers, not model names, in prompts.** Concrete models are set in the Orca workspace
-   configuration (§2).
-5. **One task group = one worktree.** Parallel work runs in separate git worktrees on separate
-   branches; hand-offs are files, never chat history (§6).
-6. **The user owns irreversible steps.** Agents never push, merge to `main`, rewrite history, run a
-   real mailbox sync, or authorise against Google. They stop and ask.
+1. \*\*Procedural contracts over personas.\*\* Each Orca extension role has explicit inputs, steps, outputs, and an automated quality gate. No conversational roleplay or vague personas.
 
-## 2. Model tiers
+2. \*\*Deterministic tools before LLMs.\*\* Anything a linter, formatter, type checker, schema validator, or test runner can decide is blocked from using LLM tokens.
 
-| Tier | Use | Suggested (set in Orca config, not in prompts) |
-|---|---|---|
-| **A — Frontier reasoning** | Coordinator, Reviewer for security/money tasks, spec changes | Claude Opus 5.5 |
-| **B — Coding** | Developer, Test Author | Claude Sonnet 5.5 |
-| **C — Fast / cheap** | Reviewer for UI/docs-only tasks, summaries | Claude Haiku 5.5, or a local model |
+3. \*\*Author ≠ reviewer.\*\* The Reviewer runs in an isolated, stateless Orca worker thread. It only inspects the spec and the diff—executing on a separate model instance from the author to eliminate confirmation bias.
 
-Tier C is never used for: golden-value tests (Article VII), the alert reader, anything under
-`app/mailbox/`, or reviewing those. Any tier sends code and anonymised fixtures to its provider;
-that is acceptable (no personal data), but agents must never read the paths listed in §6.3.
+4. \*\*Tiers mapped to Orca agent instances.\*\* Concrete model strings are managed directly within the Orca workspace configuration (`--agent` and `--model`), keeping raw prompts clean.
 
-## 3. Roles
+5. \*\*One agent extension = one repo workspace task.\*\* Parallel tasks run in independent Git worktrees (`task/T0NN-<slug>`) to prevent context contamination and file merge collisions.
 
-```text
-[Coordinator, Tier A]
-   ├─ picks next task group from tasks.md ──> Test Author [B]  (tests only, must fail)
-   ├─ tests committed ──────────────────────> Developer [B]    (code only, gates §4 green)
-   ├─ gates green ──────────────────────────> Reviewer [A or C, fresh session, read-only]
-   └─ review PASS ──> ticks tasks.md, reports to user; FAIL ──> back to Developer (max 2 loops)
-```
+6. \*\*Strict loop circuit breakers.\*\* Autonomous repair loops are capped at a maximum of two iterations. If deterministic gates or reviewer checks fail twice consecutively, the worker halts and escalates to the human operator.
 
-The spec, plan and tasks already exist (`specs/001-alert-email-import/`), so there is no separate
-Planner: spec changes go through the Spec Kit commands (`/speckit-clarify`, `/speckit-plan`,
-`/speckit-tasks`) run by the coordinator **with the user**, never silently by a worker.
+7. \*\*Environment isolation &amp; safety boundaries.\*\* All worker runs must enforce sandboxed environment overrides (`TEMP_DIR`, mock databases, temp app data) and are strictly barred from touching the `main` branch or production configurations.
 
-### 3.1 Coordinator (Tier A)
+---
 
-- **Input**: `specs/001-alert-email-import/{spec,plan,tasks,research,data-model,quickstart}.md`,
-  `contracts/`, the constitution, `handoffs/` and `reviews/`.
-- **Steps**:
-  1. Follow the **phase order of `tasks.md`** (delivery order: P0 → file path → mailbox). Within a
-     phase, group tasks into units of work: a test task plus the implementation tasks it covers.
-  2. Run groups in parallel only if they are marked `[P]` **and** touch no common file. Always
-     serialise tasks touching the hot files: `app/db.py`, `app/scoring.py`, `app/main.py`,
-     `app/cli.py`, `app/static/index.html`, `app/derive.py`, `app/alerts.py`,
-     `tests/conftest.py`. Test files are one per task in `tasks.md`; if two tasks name the same
-     test file, serialise them too.
-  3. For each group: create a worktree and branch `task/T0NN-<slug>` from the feature branch, give
-     the Test Author §3.2, then the Developer §3.3, run §4, then give a fresh Reviewer §3.4.
-  4. On PASS: merge the task branch into the feature branch (local merge only), tick the task
-     boxes in `tasks.md` (only the coordinator edits `tasks.md`), and post a one-paragraph status
-     to the user.
-  5. Stop and ask the user when: a gate fails twice; the Reviewer fails a group twice; a task needs
-     a spec/plan change; a task needs a new dependency (Article X); a phase checkpoint is reached
-     (end of Phase 3, Phase 8 = 2026-11-14 target, Phase 9 = v1 2026-11-28).
-- **Output**: updated `tasks.md`, one status message per merged group, checkpoint reports.
+## 2. Model Tier Mapping
 
-### 3.2 Test Author (Tier B)
+| Tier | Orca Agent Mapping | Target Models | Best Suited Tasks |
 
-- **Input**: the task IDs, `tasks.md`, the relevant contract and data-model sections,
-  `tests/fixtures/emails/`, `tests/conftest.py`.
-- **Steps**: write the test tasks of the group exactly as described; run them and confirm they fail
-  for the right reason (missing function/behaviour, not import or syntax errors). Use the
-  `no_network` fixture in every test that imports, syncs or uses the mailbox client.
-- **Golden tests (Article VII)**: compute every expected money/score value by hand or from an
-  independent source, and write the calculation and its source as a comment next to the assertion.
-  Reader tests: read expected values from the fixture text by hand; never copy them from code
-  output.
-- **Constraints**: must not create or edit anything under `app/`; must not weaken an assertion to
-  make it pass; must not invent email formats (Article VI) — only the 12 fixtures.
-- **Output**: test files committed on the task branch; `handoffs/T0NN-tests.md` listing each test,
-  what it asserts and why it fails now.
+| :--- | :--- | :--- | :--- |
+
+| \*\*Tier A — Frontier Reasoning\*\* | Premium Cloud Layer (`--agent claude` / `--agent codex`) | \*\*Claude 3.5 Sonnet / Claude Pro / GPT-4o\*\* | Architecture, task decomposition, contract ownership, complex cross-repo analysis |
+
+| \*\*Tier B — Coding\*\* | Premium Cloud Layer (`--agent claude` / `--agent opencode`) | \*\*Claude 3.5 Sonnet / GPT-4o\*\* | Feature implementation, refactoring, and satisfying failing test suites |
+
+| \*\*Tier C — Fast / Cheap / Local\*\* | Local Ollama / Zero-Cost Layer (`--agent opencode --model ollama/...`) | \*\*Ollama (`qwen2.5-coder:14b`, `deepseek-coder`)\*\* | Structural unit/integration test authoring, deterministic linting, style &amp; diff audits |
+
+---
+
+## 3. Orca Agent Configurations &amp; Roles
+
+\`\`\`text
+
+[Orca Coordinator Agent] (Runs on root workspace / spec-kit branch)
+
+       │
+
+       ├─── (Task Triage &amp; DAG) ────► 1. Planner \[Tier A - Cloud Frontier\]
+
+       │
+
+       ├─── (Failing Tests Pass) ──► 2. Test Author \[Tier C - Local Ollama\]
+
+       │
+
+       ├─── (Implementation) ──────► 3. Developer \[Tier B - Cloud Coding\]
+
+       │
+
+       ├─── (Cross-Repo Schemas) ──► 4. Contract Owner \[Tier A - Frontier\]
+
+       │
+
+       └─── (Diff &amp; Security Audit) ► 5. Reviewer \[Tier C - Local Ollama\]
+
+\`\`\`
+
+### 3.1 Planner (Tier A)
+
+\* \*\*Orca Execution Slot:\*\* Workspace Root / Primary Terminal Agent (`claude` or `opencode`).
+
+\* \*\*Input:\*\* Raw user objective, existing `specs/`, repo architectural map.
+
+\* \*\*Steps:\*\* Decomposes requirements into structured task groups in `specs/NNN-feature/{spec,plan,tasks}.md`.
+
+\* \*\*Output:\*\* Standard spec-kit tasks with explicit input/output boundaries and binary pass/fail criteria.
+
+\* \*\*Gate:\*\* Every generated task must specify its target worktree, dependencies, and test commands. Cross-repo dependencies automatically trigger a hold for the Contract Owner.
+
+### 3.2 Test Author (Tier C — Cheap / Local Ollama)
+
+\* \*\*Orca Execution Slot:\*\* Target Repository Child Worktree (`task/T0NN-<slug>`).
+
+\* \*\*Agent Dispatch:\*\* `orca orchestration worker-start --task <taskId> --worktree new-child --name test-<slug> --agent opencode --model ollama/qwen2.5-coder:14b --json`
+
+\* \*\*Input:\*\* [`tasks.md`](http://tasks.md) from the spec-kit, schema specifications in `schemas/`.
+
+\* \*\*Steps:\*\* Generates structural unit, integration, or contract test suites mapping strictly to the acceptance criteria. Executes tests locally to ensure they fail cleanly for expected structural reasons.
+
+\* \*\*Output:\*\* Failing test files committed to the task worktree branch prior to production code changes.
+
+\* \*\*Constraints:\*\* \*\*Strictly forbidden from writing or altering functional application logic.\*\* Cannot soften assertions to force passes.
 
 ### 3.3 Developer (Tier B)
 
-- **Input**: the task IDs, `tasks.md`, the failing tests, the contracts, research decisions cited
-  in the task, `handoffs/T0NN-tests.md`.
-- **Steps**: implement one task at a time, in the files the task names, matching the surrounding
-  code style; run §4 after each task.
-- **Constraints**:
-  - must not edit the Test Author's tests; if a test is wrong, write it up in the handoff and stop;
-  - no new dependency (Article X); standard library + `requirements.txt` only;
-  - no network access at runtime except the endpoints in research R8, and none in tests;
-  - never print, log or return secrets; never place secrets or personal data in the repository;
-  - no literal tax/rate constants in logic (Article II); weights and thresholds in config (VIII).
-- **Gate**: §4 green.
-- **Output**: code committed on the task branch; `handoffs/T0NN-dev.md`: what changed, files,
-  decisions not covered by the docs, anything the Reviewer should look at.
+\* \*\*Orca Execution Slot:\*\* Current Task Worktree (`task/T0NN-<slug>`).
 
-### 3.4 Reviewer (Tier A for Phases 2, 4, 5, 6, 9; Tier C allowed for UI/docs-only groups)
+\* \*\*Agent Dispatch:\*\* `orca orchestration worker-start --task <taskId> --worktree current --agent claude --json`
 
-- **Runs in**: a fresh read-only session on the task worktree. Sees only: the task text, the cited
-  spec/contract sections, the constitution, `git diff <feature-branch>...HEAD`, the §4 output and
-  the two handoffs.
-- **Checks**:
-  1. every acceptance criterion of the tasks is met and tested;
-  2. the constitution checklist in §5;
-  3. edge cases named in the spec for these tasks; idempotency (re-import, re-sync, re-derive);
-     order independence where `derive.py` is touched;
-  4. security: secrets never logged/returned/committed, read-only Gmail scope, only allowed calls,
-     no outbound request from tests, no path outside the configured label read;
-  5. tests not weakened (compare with `handoffs/T0NN-tests.md`).
-- **Constraints**: no code edits and no code suggestions beyond naming the problem; no style
-  comments (out of scope).
-- **Output**: `reviews/T0NN.md` starting with `STATUS: PASS` or `STATUS: FAIL`, then numbered
-  findings with file:line and the criterion or article they break.
+\* \*\*Input:\*\* [`tasks.md`](http://tasks.md), failing test suite files.
 
-## 4. Deterministic gates
+\* \*\*Steps:\*\* Implements minimal functional code to satisfy the failing tests. Runs local deterministic verification scripts (§4) prior to requesting review.
 
-Run from the worktree root, in this order; stop at the first failure. Every agent session (and
-every gate run) first sets the isolation variables of §6.3, e.g. in PowerShell:
-`$env:CASA_DB="$env:TEMP\casa-agent\casa.db"; $env:CASA_NEEDS="$env:TEMP\casa-agent\needs.yaml";
-$env:CASA_APPDATA="$env:TEMP\casa-agent\appdata"` (copy `config/needs.example.yaml` to the
-`CASA_NEEDS` path first).
+\* \*\*Constraints:\*\* Cannot edit test files written by the Test Author without raising an integration flag in the handoff document; cannot edit shared schemas.
 
-| Gate | Command | Pass when |
-|---|---|---|
-| Isolation | check that `CASA_DB`, `CASA_NEEDS`, `CASA_APPDATA` are set and none points into the repository or the real `%LOCALAPPDATA%\casa-radar` | all three set, all outside |
-| Byte-compile | `python -m compileall -q app tests` | exit 0 |
-| Test suite | `python -m pytest -q -m "not slow"` | exit 0, no skipped tests added by this task |
-| Slow tests (checkpoints only) | `python -m pytest -q -m slow` | exit 0; run by the coordinator at each phase checkpoint, not per task (SC-001, SC-010 timings) |
-| Fixture privacy (FR-024) | `python tests/fixtures/anonymise_eml.py --check tests/fixtures/emails` | exit 0 |
-| Forbidden paths | `git diff --name-only <feature-branch>...HEAD` | lists nothing under `data/`, no `config/needs.yaml`, `config/zone_aliases.yaml`, `client_secret*`, `token*`, and no `.eml` outside `tests/fixtures/emails/` |
-| No new dependency | `git diff <feature-branch>...HEAD -- requirements.txt` | empty, unless the user approved it |
+\* \*\*Gate:\*\* Must successfully execute all local validation pipelines detailed in §4.
 
-No linter is part of the gate: adding one (e.g. ruff) is a new dependency and needs the user's
-approval under Article X.
+### 3.4 Contract Owner (Tier A)
 
-## 5. Constitution checklist for the Reviewer
+\* \*\*Orca Execution Slot:\*\* Workspace Root / Shared Schemas Directory.
 
-- **I Honest Data**: no imputed values; absent attribute = null/"desconocido", never "no"; flags
-  name what is missing.
-- **II Estimates**: money outputs labelled as estimates; rates only from `needs.yaml`.
-- **III Local-First**: no telemetry, no outbound call except research R8 endpoints; secrets only in
-  the app folder; nothing personal in the repo.
-- **IV Lawful Sourcing**: no portal page, tracking link or image requested; Gmail ≤ 10 req/s.
-- **V Human in the Loop**: nothing follows links.
-- **VI Fail Loudly**: unexpected shapes produce failures with evidence; parsers only from fixtures;
-  tests offline.
-- **VII Test-First Money Maths**: golden tests with cited hand calculation for every scoring/money
-  change.
-- **VIII Reproducible**: same inputs → same output; `SCORING_VERSION` bumped if scoring changed.
-- **IX Keep Raw Data**: raw email stored before derivation; re-derivable.
-- **X Simplicity**: no new dependency; smallest change that meets the task.
+\* \*\*Input:\*\* Structural modifications to messaging schemas, CloudEvents envelopes, service bus infrastructure layouts, or global configuration blocks.
 
-## 6. Workflow rules
+\* \*\*Steps:\*\* Verifies producer/consumer compatibility layouts. Restructures schema version markers, manages migrations, and updates cross-service validation files.
 
-### 6.1 Hand-offs
+\* \*\*Gate:\*\* Blocks all breaking changes lacking backward-compatible fallbacks or consumer-side test coverage.
 
-Agents pass context only through files in `specs/001-alert-email-import/`:
-`handoffs/T0NN-tests.md`, `handoffs/T0NN-dev.md`, `reviews/T0NN.md`. They never read another
-agent's chat. Hand-off files are committed with the task branch.
+### 3.5 Reviewer (Tier C — Cheap / Local Ollama)
 
-### 6.2 Directory scopes
+\* \*\*Orca Execution Slot:\*\* Isolated Read-Only Thread Workspace (`opencode-cheap-review`).
 
-- Coordinator: feature worktree (`jorgevr/spec-kit`), read access to all of it.
-- Test Author, Developer, Reviewer: their task worktree only.
-- The main checkout `C:\code\casa-radar` is the user's; no agent works there.
+\* \*\*Agent Dispatch:\*\* `orca orchestration worker-start --task <taskId> --worktree current --agent opencode --model ollama/qwen2.5-coder:14b --json`
 
-### 6.3 Never read, copy or upload
+\* \*\*Input:\*\* `git diff`, [`tasks.md`](http://tasks.md), and execution summaries of the deterministic pipeline gates (§4).
 
-The app defaults to these real locations, so agents MUST always run with `CASA_DB`, `CASA_NEEDS`
-and `CASA_APPDATA` pointing to a temporary folder (§4), including when they run the CLI or
-`serve`. Without them, `serve` would use the user's real database and, after Phase 9, their real
-OAuth authorisation.
+\* \*\*Steps:\*\* Evaluates the diff against acceptance criteria. Inspects changes for edge-case errors, idempotency failures, security vulnerabilities (OWASP top 10, credential leaks), and observability compliance (§5).
 
-- `data/` (local database with raw emails and listings);
-- `config/needs.yaml` and `config/zone_aliases.yaml` (household data);
-- `%LOCALAPPDATA%\casa-radar\` (OAuth client secret and token);
-- the user's mailbox (agents never run `mailbox-setup` or a real `sync`; quickstart §3 and §5 are
-  done by the user).
+\* \*\*Constraints:\*\* \*\*Forbidden from outputting code adjustments.\*\* Bypasses style reviews (handled natively by linters).
 
-### 6.4 Git
+\* \*\*Output:\*\* Generates `specs/NNN-*/[review.md](http://review.md)` with an explicit binary pass/fail status and line-item notes. If failed, routes execution back to the Developer.
 
-Local commits on task branches; local merges into the feature branch by the coordinator. Never push,
-force-push, rebase shared branches, rewrite history, or touch `main`. Commit messages:
-`T0NN: <summary>`.
+---
 
-## 7. Rollout
+## 4. Deterministic Pipeline Gates &amp; PR Packets
 
-1. **Phase 1 (now)**: Coordinator + Developer + Reviewer on Tier A/B for tasks.md Phases 1–3;
-   tests written by the Developer but committed before the code. Measure: loops per group, gate
-   failures.
-2. **Phase 2**: split the Test Author out for Phases 4–8 (the golden-test heavy part).
-3. **Phase 3**: allow Tier C reviewers for UI/docs-only groups if Phase 1–2 reviews were reliable.
+Orca worker threads must run these local checks before passing data to the next agent role. If these checks fail, the agent task loop halts instantly to save LLM tokens.
+
+| Stack Component | Validation Commands |
+
+| :--- | :--- |
+
+| \*\*Python (`ingestion-func`)\*\* | `ruff check .` · `pytest` (from target root) |
+
+| \*\*.NET (`processing-func`)\*\* | `dotnet format --verify-no-changes` · `dotnet build` · `dotnet test` |
+
+| \*\*Data Schemas\*\* | Native JSON Schema structural validation of `schemas/*.json` |
+
+### Automated PR Packet Requirements
+
+Before code is proposed for merge into the working branch (`spec-kit`), the Developer agent must assemble a structured \*\*PR Packet\*\*:
+
+1. \*\*Change Summary &amp; Intent:\*\* Explaining what was built and referencing the exact task ID in [`tasks.md`](http://tasks.md).
+
+2. \*\*Files Touched &amp; Seams:\*\* Explicit file boundaries ensuring no shared or out-of-scope files were edited.
+
+3. \*\*Deterministic Verification Proof:\*\* Raw terminal logs showing passing linter, type-check, and test suite execution.
+
+4. \*\*Single-PR Boundary:\*\* Exactly one agent/task owns one branch/PR to eliminate merge conflicts.
+
+---
+
+## 5. Observability Verification Rules
+
+The Reviewer agent ensures compliance with these core standards:
+
+\* \*\*OpenTelemetry\*\* via the Azure Monitor OpenTelemetry framework routed to Application Insights.
+
+\* \*\*Explicit tracking IDs\*\* attached to every processing run, passed transparently through Service Bus message attributes and CloudEvents layouts.
+
+\* \*\*Data metrics recorded per execution loop:\*\* rows processed, rows rejected, and quarantined inputs mapped to specific error codes.
+
+---
+
+## 6. Orca Fleet Workflow &amp; Orchestration State Machine
+
+Agents pass context exclusively by writing files to the `specs/NNN-*/` path. \*\*Agents do not read each other's live Orca chat screen histories.\*\*
+
+### Native Orca Orchestration Protocol (The State Machine)
+
+\`\`\`bash
+
+# 1. Initialize Durable Run Namespace
+
+orca orchestration run-create --objective "Implement Feature NNN" --json
+
+# 2. Register Spec-Kit Tasks
+
+TASK_ID=$(orca orchestration task-create --spec "Task specification text" --task-title "Task Title" --json | jq -r '.taskId')
+
+# 3. Spawn Test Author in Child Worktree
+
+orca orchestration worker-start --task "$TASK_ID" --worktree new-child --name "task-T0NN-slug" --agent opencode --model ollama/qwen2.5-coder:14b --setup run --json
+
+# 4. Wait for Completion / Questions
+
+orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 900000 --json
+
+# 5. Hand Off to Developer Agent (Same Worktree)
+
+orca orchestration worker-start --task "$TASK_ID" --worktree current --agent claude --json
+
+orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 900000 --json
+
+# 6. Audit Diff via Read-Only Reviewer
+
+orca orchestration worker-start --task "$TASK_ID" --worktree current --agent opencode --model ollama/qwen2.5-coder:14b --json
+
+orca orchestration check --wait --types worker_done,escalation,question --timeout-ms 900000 --json
+
+# 7. Decision Gate &amp; Merge Approval (Human-in-the-Loop)
+
+orca orchestration gate-create --task "$TASK_ID" --question "Task passed tests and review. Merge worktree into spec-kit?" --options '["yes","no"]' --json
+
+# 8. Terminal Cleanup &amp; Archive
+
+orca orchestration worker-release --dispatch &lt;dispatchId&gt; --json
+
+\`\`\`
+
+### Worker Messaging Contract
+
+\* Every worker must report completion via `worker_done` with `--outcome succeeded|failed`, a summary `--body`, and `--files-modified`.
+
+\* Workers use `orca orchestration ask` for mid-task clarifications instead of interactive terminal prompts.
+
+### Circuit Breakers &amp; Retry Limits
+
+\* \*\*Maximum 2 repair iterations per task group.\*\* If a deterministic check or reviewer check fails twice consecutively, the Coordinator halts immediately and escalates to the human operator using `orca orchestration ask`.
+
+\* \*\*Zero Main Touching:\*\* All work runs in `task/T0NN-<slug>` worktrees and merges into `spec-kit`. Never push or commit directly to `main`.
+
+\* \*\*Isolated Environment:\*\* Every worker session must override `TEMP_DIR`, databases (`CASA_DB`), and application configs (`CASA_APPDATA`) to dedicated temporary folders.
+
+---
+
+## 7. Revised Rollout Phases
+
+1. \*\*Phase 1 (Hybrid Baseline):\*\* Bind the Orca coordinator workspace to your premium Claude subscription for the \*\*Planner\*\* and \*\*Developer\*\* steps, while configuring a local \*\*Ollama\*\* model tier exclusively for the \*\*Reviewer\*\* diff audits.
+
+2. \*\*Phase 2 (Automated Test Insertion):\*\* Introduce the local/cheap \*\*Test Author\*\* agent step to write structural test files before the cloud-tier Developer writes the implementation code.
+
+3. \*\*Phase 3 (Multi-Repo Federation):\*\* Scale up to cross-project execution loops using independent workspace checkouts under the management of the \*\*Contract Owner\*\* agent.
+

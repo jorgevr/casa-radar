@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import binascii
 import json
+import math
 import os
 import re
 import tempfile
@@ -11,10 +12,12 @@ from pathlib import Path
 
 import yaml
 from fastapi import Body, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import alerts, db, derive, mortgage, scoring
+from typing import Any
+
+from . import alerts, categories, db, derive, mortgage, scoring
 from .etl import indicators as ind_etl
 from .etl import overpass
 from .listings import upsert_listing
@@ -22,6 +25,10 @@ from .providers import csv_import
 
 STATIC = Path(__file__).parent / "static"
 PROVIDERS_PATH = os.environ.get("CASA_PROVIDERS", str(db.ROOT / "config" / "providers.yaml"))
+
+
+UNIT_MAX = 1e12  # exclusive upper bound for a user-entered price or area (far above any real value)
+SQLITE_INT_MAX = 2**63 - 1  # largest integer SQLite stores
 
 
 def create_app(db_path: str | None = None, needs_path: str | None = None) -> FastAPI:
@@ -44,16 +51,9 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
     # ── listings ────────────────────────────────────────────────────────────
     def merge_groups() -> dict[str, list[str]]:
         """Final live target id -> ids merged into it (chains resolved; members of a cycle have no target)."""
-        into = {r["id"]: r["merged_into"] for r in conn.execute(
-            "SELECT id, merged_into FROM listings WHERE merged_into IS NOT NULL AND merged_into <> ''")}
         groups: dict[str, list[str]] = {}
-        for src, cur in into.items():
-            seen = {src}
-            while cur in into and cur not in seen:
-                seen.add(cur)
-                cur = into[cur]
-            if cur not in into:
-                groups.setdefault(cur, []).append(src)
+        for src, target in scoring.merge_targets(conn).items():
+            groups.setdefault(target, []).append(src)
         return groups
 
     def with_provenance(rows: list[dict]) -> list[dict]:
@@ -107,15 +107,21 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
     def price_history(lid: str):
         if conn.execute("SELECT 1 FROM listings WHERE id=?", (lid,)).fetchone() is None:
             raise HTTPException(404, "listing not found")
-        # Same ordering as scoring.py (data-model "Extended: price_history"); duplicated, not shared.
+        ids = scoring.combined_history_ids(conn, lid)  # own rows plus those of listings merged into it
         rows = conn.execute(
-            "SELECT day, price, origin FROM price_history WHERE listing_id=? "
-            "ORDER BY day, (origin = 'alert_previous') DESC, rowid", (lid,))
+            f"SELECT day, price, origin FROM price_history WHERE listing_id IN ({','.join('?' * len(ids))}) "
+            f"ORDER BY {scoring.HISTORY_ORDER}", ids)
         return [{"day": r["day"], "price": r["price"], "origin": r["origin"]} for r in rows]
 
     @app.get("/api/listings")
-    def listings():
-        return with_provenance(scoring.rank(conn, needs()))
+    def listings(new_since_last_run: bool = False):
+        ranked = scoring.rank(conn, needs())  # ranks and scores are those of the full list; the filter comes after
+        if new_since_last_run:
+            last = conn.execute("SELECT MAX(run_id) FROM import_runs WHERE kind != 'reprocess' AND status = 'ok'"
+                                ).fetchone()[0]
+            ranked = [l for l in ranked
+                      if last is not None and l.get("first_run_id") is not None and l["first_run_id"] >= last]
+        return with_provenance(ranked)
 
     @app.post("/api/listings")
     def add_listing(body: dict = Body(...)):
@@ -127,23 +133,90 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
         ids = csv_import.import_csv_text(conn, text, needs())
         return {"imported": len(ids)}
 
+    def categories_view():
+        try:
+            rules = categories.load_rules()
+        except ValueError as exc:  # malformed rules file: a clear message, not a traceback
+            raise HTTPException(500, f"alert category rules unreadable: {exc}")
+        names = conn.execute(
+            "SELECT search_name AS name, MIN(category) AS category, COUNT(*) AS emails FROM alert_emails "
+            "WHERE search_name IS NOT NULL AND search_name <> '' GROUP BY search_name ORDER BY search_name").fetchall()
+        return {"rules": rules,
+                "search_names": [{"name": r["name"], "category": r["category"] or categories.UNKNOWN,
+                                  "emails": r["emails"]} for r in names]}
+
+    @app.get("/api/categories")
+    def get_categories():
+        return categories_view()
+
+    @app.put("/api/categories")
+    def put_categories(body: Any = Body(...)):
+        if not isinstance(body, dict) or "rules" not in body:
+            raise HTTPException(400, 'body must be {"rules": [{"contains": ..., "category": ...}]}')
+        try:
+            rules = categories.validate_rules(body["rules"], "rules")
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        try:
+            categories.save_rules(rules)  # atomic: temp file + replace
+        except OSError as exc:  # read-only or locked file: say so without the local path
+            raise HTTPException(500, f"the rules file could not be written ({type(exc).__name__}); nothing was saved")
+        try:
+            categories.recategorise_all(conn)  # FR-031: all stored emails, no re-import
+        except ValueError as exc:
+            raise HTTPException(500, f"alert category rules unreadable: {exc}")
+        return categories_view()
+
     @app.patch("/api/listings/{lid:path}")
     def patch_listing(lid: str, body: dict = Body(...)):
         if conn.execute("SELECT 1 FROM listings WHERE id=?", (lid,)).fetchone() is None:
             raise HTTPException(404, "listing not found")
+        if "new_build" in body and body["new_build"] is not None and not isinstance(body["new_build"], bool):
+            raise HTTPException(400, "new_build must be true | false | null")
         if "status" in body and body["status"] not in {"new", "shortlist", "discarded"}:
             raise HTTPException(400, "status must be new | shortlist | discarded")
         if "availability" in body and (not isinstance(body["availability"], str)
                                        or body["availability"] not in {"active", "gone"}):
             raise HTTPException(400, "availability must be active | gone")
-        for k in ("status", "notes"):
-            if k in body:
-                conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
-        if "availability" in body:  # only the user changes availability (FR-019); the date records each change
-            conn.execute("UPDATE listings SET availability=?, availability_changed_at=? WHERE id=?",
-                         (body["availability"], db.today(), lid))
-            derive.derive_listing(conn, lid)  # refresh the relisted flag against the new mark
-        conn.commit()
+        for k in ("price", "area_m2"):  # unit values (FR-034): a positive number; null is not accepted
+            if k in body and (isinstance(body[k], bool) or not isinstance(body[k], (int, float))
+                              or not math.isfinite(body[k]) or body[k] <= 0
+                              or body[k] >= UNIT_MAX):
+                raise HTTPException(400, f"{k} must be a number greater than 0 and below {UNIT_MAX:g}")
+        if "bedrooms" in body and (isinstance(body["bedrooms"], bool) or not isinstance(body["bedrooms"], int)
+                                   or not 0 <= body["bedrooms"] <= SQLITE_INT_MAX):
+            raise HTTPException(400, "bedrooms must be a whole number, 0 or more")
+        try:  # all-or-nothing: any failure leaves no partial write on the shared connection
+            for k in ("status", "notes"):
+                if k in body:
+                    conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
+            units = [k for k in ("price", "area_m2", "bedrooms") if k in body]
+            if units:  # the user's value, protected from later alerts (FR-023)
+                sources = json.loads(conn.execute("SELECT field_sources FROM listings WHERE id=?", (lid,)).fetchone()[0] or "{}")
+                for k in units:
+                    conn.execute(f"UPDATE listings SET {k}=? WHERE id=?", (body[k], lid))
+                    sources[k] = "manual"
+                conn.execute("UPDATE listings SET field_sources=? WHERE id=?", (json.dumps(sources, sort_keys=True), lid))
+                derive.derive_listing(conn, lid)
+            if "availability" in body:  # only the user changes availability (FR-019); the date records each change
+                conn.execute("UPDATE listings SET availability=?, availability_changed_at=? WHERE id=?",
+                             (body["availability"], db.today(), lid))
+                derive.derive_listing(conn, lid)  # refresh the relisted flag against the new mark
+            if "new_build" in body:  # FR-033: a user value (origin 'user'); null clears it and the derivation decides again
+                v = body["new_build"]
+                sources = json.loads(conn.execute("SELECT field_sources FROM listings WHERE id=?", (lid,)).fetchone()[0] or "{}")
+                if v is None:
+                    sources.pop("new_build", None)  # drop the user label; derive re-labels what it re-derives
+                else:
+                    sources["new_build"] = "manual"  # same convention as price/area/bedrooms (derive.USER_ORIGINS)
+                conn.execute("UPDATE listings SET new_build=?, new_build_origin=?, field_sources=? WHERE id=?",
+                             (None, None, json.dumps(sources, sort_keys=True), lid) if v is None
+                             else (int(v), "user", json.dumps(sources, sort_keys=True), lid))
+                derive.derive_listing(conn, lid)
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
         return {"ok": True}
 
     @app.post("/api/listings/{lid:path}/amenities")
@@ -169,9 +242,14 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
         notes = [n for n in notes if "text" in n]
         out["problems"] = [dict(r) for r in conn.execute(
             "SELECT email_id, alert_date, subject, outcome, reason FROM alert_emails "
-            "WHERE first_run_id=? AND outcome IN ('rejected','failed') ORDER BY rowid", (run_id,))]
-        out["problems"] += [{"email_id": n["email_id"], "alert_date": None, "subject": None,
-                             "outcome": "failed", "reason": n["reason"]} for n in file_failures]
+            f"WHERE {'last_run_id' if out['kind'] == 'reprocess' else 'first_run_id'}=? "
+            "AND outcome IN ('rejected','failed') ORDER BY rowid", (run_id,))]
+        for n in file_failures:  # a whole file has no row (null date/subject); a reprocess exception has one
+            stored = conn.execute("SELECT alert_date, subject FROM alert_emails WHERE email_id=?",
+                                  (n["email_id"],)).fetchone()
+            out["problems"].append({"email_id": n["email_id"], "alert_date": stored["alert_date"] if stored else None,
+                                    "subject": stored["subject"] if stored else None,
+                                    "outcome": "failed", "reason": n["reason"]})
         out["notices"] = [{"email_id": n["email_id"], "alert_date": subj[n["email_id"]]["alert_date"] if n["email_id"] in subj else None,
                            "subject": subj[n["email_id"]]["subject"] if n["email_id"] in subj else None, "text": n["text"]} for n in notes]
         return out
@@ -202,6 +280,35 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
                 paths[-1].write_bytes(raw)
             summary = alerts.import_paths(conn, paths, kind="file_ui")
         return summary
+
+    @app.get("/api/alerts/emails")
+    def list_alert_emails(outcome: str | None = None):
+        if outcome is not None and outcome not in ("failed", "rejected", "imported"):
+            raise HTTPException(400, "outcome must be failed, rejected or imported")
+        where, args = ("WHERE outcome=?", (outcome,)) if outcome else ("", ())
+        return [dict(r) for r in conn.execute(
+            "SELECT email_id, alert_date, subject, reason, outcome, reader_version FROM alert_emails "
+            f"{where} ORDER BY alert_date IS NULL, alert_date DESC, rowid DESC", args)]
+
+    @app.get("/api/alerts/emails/{email_id:path}/raw")
+    def alert_email_raw(email_id: str):
+        row = conn.execute("SELECT raw FROM alert_emails WHERE email_id=?", (email_id,)).fetchone()
+        if row is None or row["raw"] is None:
+            raise HTTPException(404, "email not found")
+        # The stored body is the portal's HTML: never let the browser render or execute it.
+        return Response(bytes(row["raw"]), media_type="application/octet-stream", headers={
+            "X-Content-Type-Options": "nosniff", "Content-Disposition": 'attachment; filename="email.eml"',
+            "Content-Security-Policy": "default-src 'none'; sandbox"})
+
+    @app.post("/api/alerts/reprocess")
+    async def reprocess_alerts(request: Request):
+        try:
+            scope = (await request.json()).get("scope")
+        except (ValueError, AttributeError):
+            scope = None
+        if scope not in alerts.REPROCESS_SCOPES:
+            raise HTTPException(400, 'se esperaba {"scope": "failed" | "all"}')
+        return alerts.reprocess(conn, scope)
 
     @app.get("/api/runs")
     def list_runs(limit: int = Query(20, ge=1, le=500)):
