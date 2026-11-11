@@ -20,4 +20,5 @@
 
 ## Gates
 - `tests/test_mailbox_gmail.py`, `test_mailbox_oauth.py`, `test_mailbox_credentials.py`: 22 passed.
-- Full `-m "not slow"` suite: see below.
+- compileall OK. Full `-m "not slow"`: 521 passed, 1 skipped, 11 failed; all 11 in `tests/test_sync.py` (T058, missing module `app.alerts_sync`, ImportError). Suite takes ~5 min.
+- anonymise_eml --check: no output, exit OK. Diff vs main: no forbidden paths; requirements.txt diff empty.
