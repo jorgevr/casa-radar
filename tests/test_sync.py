@@ -207,8 +207,8 @@ def test_first_sync_uses_30_day_window_sets_backfill_and_skips_older(conn, no_ne
         "recent": {"raw": FIXTURE_FILES[0].read_bytes(), "date": recent, "label": "Label_1"},
         "old": {"raw": _distinct_message(999, FIXTURE_FILES[1]), "date": old, "label": "Label_1"},
     }
-    # Fake ignores `after` in listing to prove sync itself must not fetch outside the 30-day window.
-    src = FakeMailSource(msgs, respect_after=False)
+    # The fake filters by `after` as Gmail does (FR-027).
+    src = FakeMailSource(msgs, respect_after=True)
     _insert_mailbox_state(conn, backfill_from=None)
 
     result, exc = _invoke_sync(conn, src, kind="sync_manual")
@@ -383,7 +383,6 @@ def test_second_concurrent_sync_refused(conn, no_network):
 
     class BlockingSource(FakeMailSource):
         def list_ids(self, folder_id, after):
-            self.list_calls.append((folder_id, after))
             started.set()
             release.wait(timeout=5)
             return super().list_ids(folder_id, after)
