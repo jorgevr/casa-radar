@@ -40,7 +40,20 @@ def _assert_no_tokens(text: str) -> None:
         assert token not in text
 
 
-def test_authorize_url_has_only_gmail_readonly_scope_pkce_s256_offline_and_loopback_redirect(
+def _assert_exception_has_no_tokens(excinfo: pytest.ExceptionInfo[BaseException]) -> None:
+    _assert_no_tokens(str(excinfo.value))
+    _assert_no_tokens(repr(excinfo.value))
+    cause = excinfo.value.__cause__
+    context = excinfo.value.__context__
+    if cause is not None:
+        _assert_no_tokens(str(cause))
+        _assert_no_tokens(repr(cause))
+    if context is not None:
+        _assert_no_tokens(str(context))
+        _assert_no_tokens(repr(context))
+
+
+def test_authorize_url_has_only_gmail_readonly_scope_pkce_s256_offline_loopback_redirect_and_prompt_consent(
     no_network,
 ):
     # Expected API: build_authorization_url(...) returns the consent URL string.
@@ -60,10 +73,8 @@ def test_authorize_url_has_only_gmail_readonly_scope_pkce_s256_offline_and_loopb
     assert qs.get("scope") == [SCOPE]
     assert qs.get("code_challenge_method") == ["S256"]
     assert qs.get("access_type") == ["offline"]
+    assert qs.get("prompt") == ["consent"]
     assert qs.get("redirect_uri") == [redirect_uri]
-    assert parsed.hostname in {"127.0.0.1", "localhost"} or qs.get("redirect_uri") == [
-        redirect_uri
-    ]
     # Redirect must be loopback as specified.
     redir = urlparse(qs["redirect_uri"][0])
     assert redir.scheme == "http"
@@ -71,6 +82,8 @@ def test_authorize_url_has_only_gmail_readonly_scope_pkce_s256_offline_and_loopb
     # No extra scopes or token leakage.
     assert " " not in qs["scope"][0]
     _assert_no_tokens(url.replace(FAKE_CODE_CHALLENGE, "").replace(FAKE_STATE, ""))
+    # Silence linter-style unused warning for parsed base host; redirect is the contract.
+    assert parsed.scheme in {"https", "http"}
 
 
 def test_exchange_code_posts_to_token_endpoint(no_network):
@@ -157,9 +170,50 @@ def test_refresh_invalid_grant_raises_auth_revoked(no_network):
         )
 
 
+def test_exchange_code_invalid_grant_raises_auth_revoked(no_network):
+    from app.mailbox import AuthRevoked
+    from app.mailbox.oauth import exchange_code
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "invalid_grant"})
+
+    transport = httpx.MockTransport(handler)
+    with pytest.raises(AuthRevoked):
+        exchange_code(
+            client_id=FAKE_CLIENT_ID,
+            client_secret=FAKE_CLIENT_SECRET,
+            code=FAKE_AUTH_CODE,
+            redirect_uri="http://127.0.0.1:43123/",
+            code_verifier=FAKE_CODE_VERIFIER,
+            transport=transport,
+        )
+
+
+def test_refresh_401_raises_auth_revoked(no_network):
+    # mail-source contract: 401 after refresh -> AuthRevoked.
+    from app.mailbox import AuthRevoked
+    from app.mailbox.oauth import refresh_access_token
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"error": "unauthorized_client"})
+
+    transport = httpx.MockTransport(handler)
+    with pytest.raises(AuthRevoked):
+        refresh_access_token(
+            client_id=FAKE_CLIENT_ID,
+            client_secret=FAKE_CLIENT_SECRET,
+            refresh_token=FAKE_REFRESH_TOKEN,
+            transport=transport,
+        )
+
+
 def test_token_endpoint_errors_expose_method_path_status_only_and_never_tokens(
     no_network, caplog
 ):
+    # Contract names AuthRevoked for 401 after refresh; code-exchange 401 type is not
+    # specified by contracts/task, so (AuthRevoked, SourceUnavailable) is accepted as an
+    # open decision recorded in the handoff pending coordinator/user approval.
+    from app.mailbox import AuthRevoked, SourceUnavailable
     from app.mailbox.oauth import exchange_code, refresh_access_token
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -176,7 +230,7 @@ def test_token_endpoint_errors_expose_method_path_status_only_and_never_tokens(
     transport = httpx.MockTransport(handler)
 
     caplog.set_level(logging.DEBUG)
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises((AuthRevoked, SourceUnavailable)) as excinfo:
         exchange_code(
             client_id=FAKE_CLIENT_ID,
             client_secret=FAKE_CLIENT_SECRET,
@@ -189,11 +243,11 @@ def test_token_endpoint_errors_expose_method_path_status_only_and_never_tokens(
     assert "POST" in exc_text
     assert "/token" in exc_text
     assert "401" in exc_text
-    _assert_no_tokens(exc_text)
+    _assert_exception_has_no_tokens(excinfo)
     _assert_no_tokens(caplog.text)
 
     caplog.clear()
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(AuthRevoked) as excinfo:
         refresh_access_token(
             client_id=FAKE_CLIENT_ID,
             client_secret=FAKE_CLIENT_SECRET,
@@ -204,5 +258,5 @@ def test_token_endpoint_errors_expose_method_path_status_only_and_never_tokens(
     assert "POST" in exc_text
     assert "/token" in exc_text
     assert "401" in exc_text
-    _assert_no_tokens(exc_text)
+    _assert_exception_has_no_tokens(excinfo)
     _assert_no_tokens(caplog.text)
