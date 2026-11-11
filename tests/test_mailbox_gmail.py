@@ -76,9 +76,12 @@ def test_every_request_is_allowed_get(no_network):
         if path == "/gmail/v1/users/me/messages":
             return httpx.Response(200, json={"messages": [{"id": "m1"}]})
         if _is_message_item_path(path):
+            # Hand-computed base64url (no padding): b"raw" = bytes 0x72,0x61,0x77
+            # bits 01110010 01100001 01110111 -> 6-bit groups 011100(28='c'),
+            # 100110(38='m'), 000101(5='F'), 110111(55='3') => "cmF3".
             return httpx.Response(
                 200,
-                json={"id": "m1", "labelIds": ["LBL1"], "raw": "raw-bytes"},
+                json={"id": "m1", "labelIds": ["LBL1"], "raw": "cmF3"},
             )
         return httpx.Response(404, json={"error": "not found"})
 
@@ -98,7 +101,7 @@ def test_every_request_is_allowed_get(no_network):
     assert account == "user@example.com"
     assert folder_id == "LBL1"
     assert ids == ["m1"]
-    assert raw is not None
+    assert raw == b"raw"
 
     msg_reqs = [r for r in recorded if _is_message_item_path(_path(r))]
     assert msg_reqs, "expected at least one message fetch request"
