@@ -1,7 +1,9 @@
 """Mailbox sync: list a folder, import each new message in its own transaction, keep progress in mailbox_state.
 
 Contract: specs/001-alert-email-import/contracts/mail-source.md; research R5 (window, overlap) and R6 (lock,
-failure states). Source errors never escape: they are mapped to mailbox_state and returned in the summary.
+failure states). Source errors (AuthRevoked, FolderNotFound, SourceUnavailable) never escape: they are mapped to
+mailbox_state and returned in the summary. Any other exception, including BaseException subclasses such as
+KeyboardInterrupt, finalises the run and mailbox_state as failed, releases the lock and is re-raised.
 Errors carry short codes only, never message text, tokens or paths.
 """
 from __future__ import annotations
@@ -64,7 +66,7 @@ def _summary(status: str, error: str | None = None, **counts) -> dict:
 
 
 def _window_start(state: dict, today: date) -> date:
-    """First sync: today - 30 days; later syncs: last success date - 2 days (never earlier than backfill)."""
+    """First sync: today - 30 days; later syncs: last success date - 2 days (not clamped to backfill_from)."""
     last = state["last_success_at"]
     if last:
         return datetime.fromisoformat(last).date() - timedelta(days=OVERLAP_DAYS)
@@ -72,7 +74,7 @@ def _window_start(state: dict, today: date) -> date:
 
 
 def sync(conn, source, kind: str = "sync_manual") -> dict:
-    """Run one mailbox sync and return its summary; never raises for source errors."""
+    """Run one mailbox sync and return its summary; never raises for source errors (other exceptions re-raise)."""
     if not _LOCK.acquire(blocking=False):
         return _summary("already_running", message=REFUSED)
     try:
@@ -130,7 +132,7 @@ def _run(conn, source, kind: str) -> dict:
         detail = f"carpeta {state['label_name']} no encontrada"
     except SourceUnavailable:
         error, detail = "source_unavailable", "buzón no disponible: se reintentará en la próxima sincronización"
-    except Exception as exc:  # unexpected: leave no 'running' state behind, then surface it
+    except BaseException as exc:  # unexpected, incl. KeyboardInterrupt/SystemExit: finalise, then re-raise
         write_state(conn, last_attempt_status="failed", last_error=type(exc).__name__,
                     last_error_at=_now().isoformat(timespec="seconds"), running_run_id=None)
         alerts.finish_run(conn, run_id, "failed", type(exc).__name__)
