@@ -289,3 +289,59 @@ def test_requests_spaced_at_least_100ms(no_network, monkeypatch):
         assert later - earlier >= 0.1, (
             f"requests not spaced by >=100ms: {earlier} -> {later} (sleeps={sleeps})"
         )
+
+
+def _status_source(status: int, body=None):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json=body if body is not None else {"error": "x"})
+
+    return _make_source(httpx.MockTransport(handler))
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_401_403_raise_auth_revoked_without_token(no_network, caplog, status):
+    """401/403 -> AuthRevoked (re-authorise); message is method/path/status only, no token."""
+    from app.mailbox import AuthRevoked  # noqa: WPS433
+
+    caplog.set_level("DEBUG")
+    source = _status_source(status)
+    with pytest.raises(AuthRevoked) as info:
+        source.account()
+    text = str(info.value)
+    assert str(status) in text
+    assert "users/me/profile" in text
+    assert FAKE_TOKEN not in text
+    assert "Bearer" not in text
+    assert FAKE_TOKEN not in caplog.text
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_auth_revoked_on_every_call_path(no_network, status):
+    from app.mailbox import AuthRevoked  # noqa: WPS433
+
+    source = _status_source(status)
+    with pytest.raises(AuthRevoked):
+        source.resolve_folder("Alerts")
+    with pytest.raises(AuthRevoked):
+        list(source.list_ids("LBL1", dt.date(2026, 10, 1)))
+    with pytest.raises(AuthRevoked):
+        source.fetch_raw("LBL1", "m1")
+
+
+def test_resolve_folder_unknown_label_raises_folder_not_found(no_network):
+    from app.mailbox import FolderNotFound  # noqa: WPS433
+
+    source = _status_source(200, {"labels": [{"id": "LBL1", "name": "Alerts"}]})
+    with pytest.raises(FolderNotFound):
+        source.resolve_folder("Nope")
+
+
+def test_404_is_source_unavailable_contract_lists_no_404(no_network):
+    """contracts/mail-source.md lists no 404 mapping: 404 stays SourceUnavailable (status only)."""
+    from app.mailbox import SourceUnavailable  # noqa: WPS433
+
+    source = _status_source(404)
+    with pytest.raises(SourceUnavailable) as info:
+        source.fetch_raw("LBL1", "m1")
+    assert "404" in str(info.value)
+    assert FAKE_TOKEN not in str(info.value)
