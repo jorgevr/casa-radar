@@ -207,8 +207,8 @@ def test_first_sync_uses_30_day_window_sets_backfill_and_skips_older(conn, no_ne
         "recent": {"raw": FIXTURE_FILES[0].read_bytes(), "date": recent, "label": "Label_1"},
         "old": {"raw": _distinct_message(999, FIXTURE_FILES[1]), "date": old, "label": "Label_1"},
     }
-    # Fake ignores `after` in listing to prove sync itself must not fetch outside the 30-day window.
-    src = FakeMailSource(msgs, respect_after=False)
+    # The fake filters by `after` as Gmail does (FR-027).
+    src = FakeMailSource(msgs, respect_after=True)
     _insert_mailbox_state(conn, backfill_from=None)
 
     result, exc = _invoke_sync(conn, src, kind="sync_manual")
@@ -216,7 +216,7 @@ def test_first_sync_uses_30_day_window_sets_backfill_and_skips_older(conn, no_ne
     assert exc is None
     assert src.list_calls, "sync must list the mailbox"
     assert src.list_calls[0][1] == today - timedelta(days=30)
-    # The `after` filter is applied by the source (FR-027); sync only has to pass `today - 30 days`.
+    assert "old" not in src.fetch_calls
     stored = {r["mailbox_id"] for r in conn.execute("SELECT mailbox_id FROM alert_emails")}
     assert stored == {"recent"}
     st = _state(conn)
