@@ -318,6 +318,40 @@ def test_interruption_after_n_keeps_them_and_resumes(conn, no_network):
     assert st2["last_success_at"] is not None
 
 
+def test_keyboard_interrupt_finalises_run_state_and_releases_lock(conn, no_network):
+    """User decision (T058 follow-up): any BaseException finalises run + state, frees the lock, re-raises."""
+    base = date.today() - timedelta(days=20)
+    msgs = {f"msg{i:02d}": {"raw": FIXTURE_FILES[i].read_bytes(), "date": base + timedelta(days=i),
+                            "label": "Label_1"} for i in range(12)}
+
+    class InterruptedSource(FakeMailSource):
+        def fetch_raw(self, folder_id, message_id):
+            if message_id == "msg03":
+                raise KeyboardInterrupt  # simulated Ctrl+C, no real signal
+            return super().fetch_raw(folder_id, message_id)
+
+    _insert_mailbox_state(conn)
+    with pytest.raises(KeyboardInterrupt):
+        _sync_mod().sync(conn, InterruptedSource(msgs), kind="sync_manual")
+
+    run = conn.execute("SELECT * FROM import_runs ORDER BY run_id DESC").fetchone()
+    assert run["status"] == "failed"
+    assert run["finished_at"] is not None
+    st = _state(conn)
+    assert st["running_run_id"] is None
+    assert st["last_attempt_status"] == "failed"
+    assert st["last_error"] == "KeyboardInterrupt"
+    stored = {r["mailbox_id"] for r in conn.execute("SELECT mailbox_id FROM alert_emails")}
+    assert stored == {"msg00", "msg01", "msg02"}
+
+    # Lock is free: a following sync runs normally (not refused) and resumes the remaining 9.
+    result = _sync_mod().sync(conn, FakeMailSource(msgs), kind="sync_manual")
+    assert result["status"] == "ok"
+    assert result["n_found"] == 9
+    assert _state(conn)["last_attempt_status"] == "ok"
+    assert _state(conn)["running_run_id"] is None
+
+
 def test_auth_revoked_sets_state_and_pauses(conn, no_network):
     mailbox = _mailbox_mod()
 
