@@ -2,11 +2,15 @@
 
 Implementation does not exist yet: each test imports app.mailbox.credentials and
 is expected to fail with ModuleNotFoundError/ImportError until T055 lands.
+
+Contract choice for T055 (documented per review F1/F2): load_refresh_token()
+returns a redacted Secret holder (never a str) exposing the token value via the
+.value attribute. Refusing a CASA_APPDATA path inside the repository root raises
+ValueError (review F4).
 """
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 
@@ -22,7 +26,7 @@ def _credentials():
     return credentials
 
 
-def test_round_trip_save_and_load_refresh_token(tmp_path, monkeypatch):
+def test_round_trip_save_and_load_refresh_token(tmp_path, monkeypatch, no_network):
     """save_refresh_token/load_refresh_token round-trip under CASA_APPDATA=tmp_path."""
     monkeypatch.setenv("CASA_APPDATA", str(tmp_path))
     credentials = _credentials()
@@ -30,22 +34,14 @@ def test_round_trip_save_and_load_refresh_token(tmp_path, monkeypatch):
     credentials.save_refresh_token(FAKE_TOKEN)
     loaded = credentials.load_refresh_token()
 
-    # The loaded value must carry the original token (possibly wrapped in a
-    # Secret holder). Accept either a plain string or an object exposing the
-    # token via a common attribute/name while remaining non-leaking in repr.
-    if isinstance(loaded, str):
-        assert loaded == FAKE_TOKEN
-    else:
-        value = getattr(loaded, "value", None)
-        if value is None and hasattr(loaded, "get_secret_value"):
-            value = loaded.get_secret_value()
-        if value is None and hasattr(loaded, "secret"):
-            value = loaded.secret
-        assert value == FAKE_TOKEN
+    # load_refresh_token() returns a Secret holder (never a str) exposing the
+    # token via .value (deterministic accessor chosen for T055).
+    assert not isinstance(loaded, str), "refresh token must be wrapped in a secret holder"
+    assert loaded.value == FAKE_TOKEN
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="DPAPI storage applies on Windows")
-def test_stored_bytes_do_not_contain_token_in_clear_on_windows(tmp_path, monkeypatch):
+def test_stored_bytes_do_not_contain_token_in_clear_on_windows(tmp_path, monkeypatch, no_network):
     """On Windows the stored bytes do not contain the token in clear (DPAPI)."""
     monkeypatch.setenv("CASA_APPDATA", str(tmp_path))
     credentials = _credentials()
@@ -59,7 +55,7 @@ def test_stored_bytes_do_not_contain_token_in_clear_on_windows(tmp_path, monkeyp
     assert FAKE_TOKEN.encode("utf-16-le") not in raw
 
 
-def test_secret_holder_repr_never_shows_value(tmp_path, monkeypatch):
+def test_secret_holder_repr_never_shows_value(tmp_path, monkeypatch, no_network):
     """repr() of the secret holder never shows the value."""
     monkeypatch.setenv("CASA_APPDATA", str(tmp_path))
     credentials = _credentials()
@@ -67,35 +63,33 @@ def test_secret_holder_repr_never_shows_value(tmp_path, monkeypatch):
     credentials.save_refresh_token(FAKE_TOKEN)
     loaded = credentials.load_refresh_token()
 
-    # A plain string cannot satisfy the "secret holder" redaction requirement;
-    # loading must return a holder object whose representations are redacted.
     assert not isinstance(loaded, str), "refresh token must be wrapped in a secret holder"
+    assert loaded.value == FAKE_TOKEN
     for rendered in (repr(loaded), str(loaded)):
         assert FAKE_TOKEN not in rendered
-        assert "FAKE-REFRESH-TOKEN" not in rendered
+        # Fragment that actually appears in the fake token, to catch partial leaks.
+        assert "refresh-token" not in rendered
 
 
-def test_app_folder_inside_repository_root_is_rejected(tmp_path, monkeypatch):
-    """App folder is never inside the repository root (assert raises)."""
+def test_app_folder_inside_repository_root_is_rejected(tmp_path, monkeypatch, no_network):
+    """App folder inside the repository root is refused and nothing is written there."""
     credentials = _credentials()
     repo_root = Path(__file__).resolve().parent.parent
     inside_repo = repo_root / ".tmp-casa-appdata-inside-repo"
     inside_repo.mkdir(exist_ok=True)
     try:
         monkeypatch.setenv("CASA_APPDATA", str(inside_repo))
-        with pytest.raises(Exception):
-            # Any of these operations must refuse a repository-local app folder.
-            try:
-                credentials.save_refresh_token(FAKE_TOKEN)
-            except Exception:
-                raise
-            # If save did not raise (unexpected), loading must.
-            credentials.load_refresh_token()
+        # The first credentials operation must refuse the repository-local path.
+        with pytest.raises(ValueError, match=r"(?i)repository|repo|inside"):
+            credentials.save_refresh_token(FAKE_TOKEN)
+        # Refusal must not write anything inside the repository.
+        assert list(inside_repo.iterdir()) == []
     finally:
         # Clean up the empty probe directory inside the worktree if it remains.
-        try:
-            for child in inside_repo.iterdir():
+        for child in list(inside_repo.iterdir()):
+            if child.is_dir():
+                child.rmdir()
+            else:
                 child.unlink()
-            inside_repo.rmdir()
-        except OSError:
-            pass
+        inside_repo.rmdir()
+
