@@ -39,8 +39,8 @@ class GmailSource:
         except httpx.HTTPError as exc:
             raise SourceUnavailable(f"GET {path} failed: {type(exc).__name__}") from None
         status = response.status_code
-        if status == 401:
-            raise AuthRevoked(f"GET {path} status 401")
+        if status in (401, 403):
+            raise AuthRevoked(f"GET {path} status {status}")
         if status != 200:
             raise SourceUnavailable(f"GET {path} status {status}")
         try:
