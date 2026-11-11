@@ -7,8 +7,9 @@ for the missing module.
 """
 from __future__ import annotations
 
-import base64
 import datetime as dt
+import re
+import time
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -24,19 +25,20 @@ ALLOWED_PATHS = {
 FAKE_TOKEN = "fake-access-token-for-tests"
 
 
-def _b64url(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
-
-
 def _path(request: httpx.Request) -> str:
     return urlparse(str(request.url)).path
+
+
+def _is_message_item_path(path: str) -> bool:
+    # Allow only /gmail/v1/users/me/messages/<id> with no further segments.
+    return re.fullmatch(r"/gmail/v1/users/me/messages/[^/]+", path) is not None
 
 
 def _is_allowed(request: httpx.Request) -> bool:
     path = _path(request)
     if path in ALLOWED_PATHS:
         return True
-    return path.startswith("/gmail/v1/users/me/messages/")
+    return _is_message_item_path(path)
 
 
 def _assert_only_allowed_gets(recorded):
@@ -55,14 +57,9 @@ def _make_source(transport: httpx.MockTransport):
         base_url="https://gmail.googleapis.com/gmail/v1/",
         timeout=30.0,
     )
-    # Constructor signature not fixed yet; try the most likely forms.
-    try:
-        return GmailSource(client=client, access_token=lambda: FAKE_TOKEN)
-    except TypeError:
-        try:
-            return GmailSource(client, lambda: FAKE_TOKEN)
-        except TypeError:
-            return GmailSource(client)
+    # NEW proposed interface (not in tasks.md/contracts; pending approval before T057):
+    # GmailSource(client=<httpx.Client>, access_token=<zero-arg callable -> str>), keyword-only.
+    return GmailSource(client=client, access_token=lambda: FAKE_TOKEN)
 
 
 def test_every_request_is_allowed_get(no_network):
@@ -76,23 +73,38 @@ def test_every_request_is_allowed_get(no_network):
             return httpx.Response(200, json={"emailAddress": "user@example.com"})
         if path.endswith("/labels"):
             return httpx.Response(200, json={"labels": [{"id": "LBL1", "name": "Alerts"}]})
-        if path.endswith("/messages"):
+        if path == "/gmail/v1/users/me/messages":
             return httpx.Response(200, json={"messages": [{"id": "m1"}]})
-        if "/messages/" in path:
+        if _is_message_item_path(path):
             return httpx.Response(
                 200,
-                json={"id": "m1", "labelIds": ["LBL1"], "raw": _b64url(b"raw-bytes")},
+                json={"id": "m1", "labelIds": ["LBL1"], "raw": "raw-bytes"},
             )
         return httpx.Response(404, json={"error": "not found"})
 
     source = _make_source(httpx.MockTransport(handler))
-    # Exercise the documented surface; tolerate methods that may not all exist yet
-    # once the module is present by calling the core ones the task names.
-    source.account()
+    account = source.account()
     folder_id = source.resolve_folder("Alerts")
-    list(source.list_ids(folder_id, dt.date(2026, 10, 1)))
-    source.fetch_raw(folder_id, "m1")
+    ids = list(source.list_ids(folder_id, dt.date(2026, 10, 1)))
+    raw = source.fetch_raw(folder_id, "m1")
+
     _assert_only_allowed_gets(recorded)
+    paths = [_path(r) for r in recorded]
+    assert any(p.endswith("/profile") for p in paths), "profile endpoint not requested"
+    assert any(p.endswith("/labels") for p in paths), "labels endpoint not requested"
+    assert any(p == "/gmail/v1/users/me/messages" for p in paths), "messages list not requested"
+    assert any(_is_message_item_path(p) for p in paths), "message item endpoint not requested"
+
+    assert account == "user@example.com"
+    assert folder_id == "LBL1"
+    assert ids == ["m1"]
+    assert raw is not None
+
+    msg_reqs = [r for r in recorded if _is_message_item_path(_path(r))]
+    assert msg_reqs, "expected at least one message fetch request"
+    for req in msg_reqs:
+        qs = parse_qs(urlparse(str(req.url)).query)
+        assert qs.get("format") == ["raw"], f"message fetch must request format=raw: {qs}"
 
 
 def test_list_ids_carries_label_and_after_and_follows_pagination(no_network):
@@ -102,7 +114,7 @@ def test_list_ids_carries_label_and_after_and_follows_pagination(no_network):
     def handler(request: httpx.Request) -> httpx.Response:
         recorded.append(request)
         path = _path(request)
-        if path.endswith("/messages"):
+        if path == "/gmail/v1/users/me/messages":
             qs = parse_qs(urlparse(str(request.url)).query)
             token = qs.get("pageToken", [None])[0]
             if token is None:
@@ -117,7 +129,7 @@ def test_list_ids_carries_label_and_after_and_follows_pagination(no_network):
     ids = list(source.list_ids("LBL9", dt.date(2026, 9, 15)))
 
     assert ids == ["m1", "m2"]
-    list_reqs = [r for r in recorded if _path(r).endswith("/messages")]
+    list_reqs = [r for r in recorded if _path(r) == "/gmail/v1/users/me/messages"]
     assert len(list_reqs) == 2, "pagination must follow nextPageToken"
     for req in list_reqs:
         qs = parse_qs(urlparse(str(req.url)).query)
@@ -127,27 +139,32 @@ def test_list_ids_carries_label_and_after_and_follows_pagination(no_network):
 
 
 def test_fetch_raw_base64url_decodes(no_network):
-    """fetch_raw base64url-decodes the raw field."""
-    raw_bytes = b"Subject: Hola\r\n\r\nBody \xff-ish-safe-bytes".replace(b"\xff", b"x")
-    # Use bytes that are valid in an RFC822-ish payload; base64url handles arbitrary bytes.
-    raw_bytes = b"From: a@b\r\nSubject: Test\r\n\r\nPrice 120.000 \xe2\x82\xac"
+    """fetch_raw base64url-decodes the raw field (URL-safe alphabet, stripped padding)."""
+    # Hand-computed base64url (no standard base64, no encoder-derived expected value):
+    # raw bytes: 0xFB, 0xFF (2 bytes, length not multiple of 3 -> stripped padding case)
+    # bits: 11111011 11111111
+    # 6-bit groups: 111110 (62='-'), 111111 (63='_'), 111100 (60='8', with 2 padding bits)
+    # base64url with padding would be "-_8="; Gmail omits '=' so raw field is "-_8"
+    # (contains '-' and '_' and has stripped padding).
+    encoded_raw = "-_8"
+    expected = bytes([0xFB, 0xFF])
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = _path(request)
-        if "/messages/" in path:
+        if _is_message_item_path(path):
             return httpx.Response(
                 200,
                 json={
                     "id": "m1",
                     "labelIds": ["LBL1", "INBOX"],
-                    "raw": _b64url(raw_bytes),
+                    "raw": encoded_raw,
                 },
             )
         return httpx.Response(404, json={})
 
     source = _make_source(httpx.MockTransport(handler))
     result = source.fetch_raw("LBL1", "m1")
-    assert result == raw_bytes
+    assert result == expected
 
 
 def test_fetch_raw_message_lacking_label_raises_wrong_folder(no_network):
@@ -156,10 +173,10 @@ def test_fetch_raw_message_lacking_label_raises_wrong_folder(no_network):
 
     def handler(request: httpx.Request) -> httpx.Response:
         path = _path(request)
-        if "/messages/" in path:
+        if _is_message_item_path(path):
             return httpx.Response(
                 200,
-                json={"id": "m1", "labelIds": ["OTHER"], "raw": _b64url(b"raw")},
+                json={"id": "m1", "labelIds": ["OTHER"], "raw": "cmF3"},
             )
         return httpx.Response(404, json={})
 
@@ -178,52 +195,92 @@ def test_fetch_raw_message_lacking_label_raises_wrong_folder(no_network):
     ],
 )
 def test_429_5xx_timeout_raise_source_unavailable(no_network, response, exc):
-    """429/5xx/timeout -> SourceUnavailable."""
+    """429/5xx/timeout -> SourceUnavailable with no retries."""
     from app.mailbox import SourceUnavailable  # noqa: WPS433
 
+    calls = {"count": 0}
+
     def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
         if exc is not None:
             raise exc
         return response()
 
     source = _make_source(httpx.MockTransport(handler))
-    # Trigger a request; list_ids is a simple GET path the client must implement.
     with pytest.raises(SourceUnavailable):
         list(source.list_ids("LBL1", dt.date(2026, 10, 1)))
+    assert calls["count"] == 1, f"expected exactly 1 request (no retries), got {calls['count']}"
+
+
+@pytest.mark.parametrize(
+    "response,exc",
+    [
+        (lambda: httpx.Response(500, json={"error": "server"}), None),
+        (None, httpx.TimeoutException("timed out")),
+    ],
+)
+def test_fetch_raw_5xx_timeout_raise_source_unavailable(no_network, response, exc):
+    """fetch_raw 5xx/timeout -> SourceUnavailable (no retries)."""
+    from app.mailbox import SourceUnavailable  # noqa: WPS433
+
+    calls = {"count": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["count"] += 1
+        if exc is not None:
+            raise exc
+        return response()
+
+    source = _make_source(httpx.MockTransport(handler))
+    with pytest.raises(SourceUnavailable):
+        source.fetch_raw("LBL1", "m1")
+    assert calls["count"] == 1, f"expected exactly 1 request (no retries), got {calls['count']}"
 
 
 def test_requests_spaced_at_least_100ms(no_network, monkeypatch):
-    """Requests spaced >= 100 ms (patch the clock)."""
+    """Requests spaced >= 100 ms using a shared fake clock (>=3 requests)."""
     recorded = []
     sleeps = []
     current = {"t": 1000.0}
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        recorded.append((request, current["t"]))
-        path = _path(request)
-        if path.endswith("/messages"):
-            return httpx.Response(200, json={"messages": [{"id": "m1"}]})
-        if "/messages/" in path:
-            return httpx.Response(
-                200, json={"id": "m1", "labelIds": ["LBL1"], "raw": _b64url(b"r")}
-            )
-        return httpx.Response(404, json={})
-
-    import time
-
-    monkeypatch.setattr(time, "monotonic", lambda: current["t"])
+    def now():
+        return current["t"]
 
     def fake_sleep(seconds):
         sleeps.append(seconds)
         current["t"] += seconds
 
+    # Patch all common clock primitives and sleep via module attributes so the
+    # implementation must use time.* module attributes (not `from time import ...`).
+    monkeypatch.setattr(time, "monotonic", now)
+    monkeypatch.setattr(time, "perf_counter", now)
+    monkeypatch.setattr(time, "time", now)
     monkeypatch.setattr(time, "sleep", fake_sleep)
 
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append((request, current["t"]))
+        path = _path(request)
+        if path == "/gmail/v1/users/me/messages":
+            qs = parse_qs(urlparse(str(request.url)).query)
+            token = qs.get("pageToken", [None])[0]
+            if token is None:
+                return httpx.Response(
+                    200,
+                    json={"messages": [{"id": "m1"}], "nextPageToken": "page-2"},
+                )
+            return httpx.Response(200, json={"messages": [{"id": "m2"}]})
+        if _is_message_item_path(path):
+            return httpx.Response(
+                200, json={"id": "m1", "labelIds": ["LBL1"], "raw": "cmF3"}
+            )
+        return httpx.Response(404, json={})
+
     source = _make_source(httpx.MockTransport(handler))
+    # Two list pages plus one fetch => at least 3 recorded requests and 2 gaps.
     list(source.list_ids("LBL1", dt.date(2026, 10, 1)))
     source.fetch_raw("LBL1", "m1")
 
-    assert len(recorded) >= 2, "expected at least two requests to observe spacing"
+    assert len(recorded) >= 3, f"expected >=3 requests (2 list pages + 1 fetch), got {len(recorded)}"
     times = [t for _, t in recorded]
     for earlier, later in zip(times, times[1:]):
         assert later - earlier >= 0.1, (
