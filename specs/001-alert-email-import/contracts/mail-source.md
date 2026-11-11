@@ -19,7 +19,7 @@ Errors (the only ones the sync loop handles):
 
 | Error | Meaning | Sync loop reaction |
 |---|---|---|
-| `AuthRevoked` | refresh refused (`invalid_grant`) or 401 after refresh | stop; `auth_state = revoked`; pause auto sync (FR-029) |
+| `AuthRevoked` | refresh refused (`invalid_grant`) or 401 or 403 (permission revoked or insufficient scope) after refresh | stop; `auth_state = revoked`; pause auto sync (FR-029) |
 | `FolderNotFound` | label name not found | stop; error "folder <name> not found"; no fallback |
 | `SourceUnavailable` | network error, timeout, 5xx, 429 | stop; error recorded; next scheduled run retries |
 | `WrongFolder` | fetched message lacks the label | discard without storing; stop with internal error (FR-016) |
