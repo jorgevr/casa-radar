@@ -20,7 +20,11 @@ FEATURE_DIR=""
 TASK_SCOPE=""
 TARGET_BRANCH="spec-kit"
 BASE_REF="main"
-TIER_C_MODEL="ollama/qwen3"
+# Reviewer agent: claude (default; local qwen3 reviews proved unreliable and often failed to start).
+# TIER_C_MODEL is OPTIONAL and only used with --reviewer-agent opencode; empty = omit --model (this OpenCode
+# version refuses a chosen model; it uses its own configured default).
+REVIEWER_AGENT="claude"
+TIER_C_MODEL=""
 # Gates from AGENTS.md "Doing a task" step 3 (no linter: Article X)
 DEFAULT_GATES='python -m compileall -q app tests && python -m pytest -q -m "not slow" && python tests/fixtures/anonymise_eml.py --check tests/fixtures/emails'
 STACK_GATES="$DEFAULT_GATES"
@@ -37,7 +41,8 @@ Options:
   -b, --branch <name>          Branch the coordinator merges into (default: "spec-kit")
   -r, --base-ref <ref>         Ref for scope-guard diffs (default: "main")
   -p, --project <name>         Project name (default: "casa-radar")
-  -m, --model-tier-c <model>   Tier C Ollama model, Reviewer only (default: "ollama/qwen3")
+  -R, --reviewer-agent <agent> Reviewer agent: claude | opencode (default: "claude")
+  -m, --model-tier-c <model>   Optional --model for an opencode Reviewer (default: none, omitted)
   -g, --gates <commands>       Deterministic gates (default: AGENTS.md gates)
   -T, --tests-only             Scope has only test tasks: skip the Developer stage
   -i, --interactive            Prompt interactively for inputs
@@ -54,6 +59,7 @@ while [[ $# -gt 0 ]]; do
     -b|--branch) TARGET_BRANCH="$2"; shift 2 ;;
     -r|--base-ref) BASE_REF="$2"; shift 2 ;;
     -p|--project) PROJECT_NAME="$2"; shift 2 ;;
+    -R|--reviewer-agent) REVIEWER_AGENT="$2"; shift 2 ;;
     -m|--model-tier-c) TIER_C_MODEL="$2"; shift 2 ;;
     -g|--gates) STACK_GATES="$2"; shift 2 ;;
     -T|--tests-only) TESTS_ONLY=true; shift ;;
@@ -75,8 +81,8 @@ if [ "$INTERACTIVE" = true ] || [ -z "$FEATURE_DIR" ]; then
   read -r -p "Merge branch [default: $TARGET_BRANCH]: " INPUT_BRANCH
   TARGET_BRANCH="${INPUT_BRANCH:-$TARGET_BRANCH}"
 
-  read -r -p "Tier C local model [default: $TIER_C_MODEL]: " INPUT_TIER_C
-  TIER_C_MODEL="${INPUT_TIER_C:-$TIER_C_MODEL}"
+  read -r -p "Reviewer agent claude|opencode [default: $REVIEWER_AGENT]: " INPUT_REVIEWER
+  REVIEWER_AGENT="${INPUT_REVIEWER:-$REVIEWER_AGENT}"
 
   read -r -p "Deterministic gates [default: AGENTS.md gates]: " INPUT_GATES
   STACK_GATES="${INPUT_GATES:-$DEFAULT_GATES}"
@@ -128,6 +134,8 @@ else
      Does NOT edit tasks.md."
 fi
 
+REVIEWER_MODEL_FLAG=""
+if [ -n "$TIER_C_MODEL" ] && [ "$REVIEWER_AGENT" = "opencode" ]; then REVIEWER_MODEL_FLAG=" --model ${TIER_C_MODEL}"; fi
 cat <<EOF
 ============================= COPY TO ORCA COORDINATOR =============================
 You are the Orca Coordinator for ${PROJECT_NAME}. Your mission is to implement and verify:
@@ -179,9 +187,15 @@ hot file. Do exactly what each task says, in the files it names, nothing more.
 
 ${DEV_BLOCK}
 
-4. STAGE 3: REVIEWER (Tier C - Local Ollama, author != reviewer, read-only)
-   - orca orchestration worker-start --task <taskId> --worktree current --agent opencode --model ${TIER_C_MODEL} --json
-   - Evaluate the git diff against the acceptance criteria: edge cases, idempotency, secrets/PII leaks,
+4. STAGE 3: REVIEWER (${REVIEWER_AGENT}; author != reviewer; read-only)
+   - Run reviewers ONE AT A TIME (several parallel OpenCode starts failed with "OpenCode couldn't start").
+   - Start it in the task's existing worktree (not the coordinator's), with a self-contained spec that names
+     the task, the test file and the review file, and tells it to ignore any earlier review file:
+     orca orchestration worker-start --run <runId> --task-title "<T0NN> review" --spec-file <spec.txt> --worktree path:<task worktree path> --agent ${REVIEWER_AGENT}${REVIEWER_MODEL_FLAG} --json
+   - Do NOT trust a review you have not spot-checked: a weak local model once wrote a PASS describing code that
+     was not in the file. Verify at least two of its claims against the file, and if it cites things that are
+     not there, discard it and re-review with a stronger agent.
+   - Every finding must cite file:line and quote the assertion. Evaluate the git diff against the acceptance criteria: edge cases, idempotency, secrets/PII leaks,
      OWASP top 10, no imputed values (absent = null/"desconocido", never "no"), no literals for rates/
      weights/thresholds, no network calls, no new dependency. Forbidden from modifying code.
    - Writes one file per task: ${FEATURE_DIR}/handoffs/T0NN-review.md with an explicit status [PASS] or
