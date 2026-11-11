@@ -19,3 +19,8 @@ Tests-first confirmed: all three failed before the change on behaviour (hang / P
 
 ## Gates
 compileall OK; `pytest -q -m "not slow"`: 535 passed, 1 skipped, 2 deselected (CASA_* in %TEMP%sa-agent-FU-T056); anonymise check ran without failure; diff vs main lists no forbidden paths (only files merged from Implementation); requirements.txt diff empty.
+
+## Repair iteration 1 (review F1: drip-feeding client)
+- `Handler.timeout` is a per-recv timeout, so a client sending one byte at a time defeated the deadline. `_wait_for_redirect` now computes the absolute `deadline` up front and `Handler.handle` arms a daemon `threading.Timer` that calls `request.shutdown(SHUT_RDWR)` at the deadline (cancelled in `finally`). The blocked read then returns and the loop exits. `Handler.timeout` is kept for the idle case. Imports `socket`, `threading` added (stdlib).
+- New test `test_drip_feeding_local_client_does_not_defeat_the_authorisation_timeout` (1 s timeout, one byte per 0.2 s over loopback). Failed before the fix (authorize still alive after 5 s), passes after. Existing tests untouched.
+- Gates: compileall OK; `pytest -m "not slow"` 536 passed, 1 skipped, 2 deselected; oauth tests run 3 times, 11 passed each (3.6-4.2 s); anonymise check no failure; no forbidden paths; requirements.txt diff empty.

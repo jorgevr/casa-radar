@@ -9,6 +9,8 @@ from __future__ import annotations
 import base64
 import hashlib
 import secrets
+import socket
+import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -133,9 +135,10 @@ def _wait_for_redirect(server: HTTPServer, timeout: float, state: str) -> dict[s
 
     Requests with a wrong or missing state get a 400 and are ignored; the wait continues until the
     deadline. Each connection gets a socket timeout bounded by the time left, so an idle client
-    cannot hold the wait past the deadline.
+    cannot hold the wait past the deadline, and a timer closes any request still open at the deadline.
     """
     result: dict[str, str] = {}
+    deadline = time.monotonic() + timeout
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
@@ -156,11 +159,27 @@ def _wait_for_redirect(server: HTTPServer, timeout: float, state: str) -> dict[s
             self.end_headers()
             self.wfile.write(body)
 
+        def handle(self) -> None:
+            # Absolute deadline: a per-recv timeout is restarted by every byte a slow client
+            # sends, so a timer shuts the connection down when the overall time is up.
+            def abort() -> None:
+                try:
+                    self.request.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+            timer = threading.Timer(max(deadline - time.monotonic(), 0.0), abort)
+            timer.daemon = True
+            timer.start()
+            try:
+                super().handle()
+            finally:
+                timer.cancel()
+
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             return  # the request line carries the code; never log it
 
     server.RequestHandlerClass = Handler
-    deadline = time.monotonic() + timeout
     while not result:
         remaining = deadline - time.monotonic()
         if remaining <= 0:

@@ -388,3 +388,46 @@ def test_only_bad_state_callbacks_end_in_timeout_not_in_an_early_failure(monkeyp
     thread.join(timeout=10)
     assert not thread.is_alive()
     assert isinstance(outcome.get("exc"), TimeoutError)
+
+
+def test_drip_feeding_local_client_does_not_defeat_the_authorisation_timeout(monkeypatch):
+    import socket
+    import threading
+    import time
+
+    import app.mailbox.oauth as oauth
+
+    _patch_credentials(monkeypatch, [])
+    stop = threading.Event()
+    socks: list[socket.socket] = []
+
+    def open_browser(url):
+        parsed = urlparse(parse_qs(urlparse(url).query)["redirect_uri"][0])
+
+        def drip():
+            # One byte every 0.2 s of a never-finished request line: each recv stays under any
+            # per-recv timeout, so only an absolute deadline can end it.
+            try:
+                sock = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+                socks.append(sock)
+                sock.sendall(b"GET /")
+                while not stop.is_set():
+                    sock.sendall(b"a")
+                    time.sleep(0.2)
+            except OSError:
+                pass
+
+        threading.Thread(target=drip, daemon=True).start()
+
+    started = time.monotonic()
+    thread, outcome = _run_authorize(oauth, open_browser, timeout=1.0)
+    thread.join(timeout=5)
+    try:
+        assert not thread.is_alive(), "authorize() is held past its deadline by a drip-feeding client"
+        assert isinstance(outcome.get("exc"), TimeoutError)
+        assert time.monotonic() - started < 4
+    finally:
+        stop.set()
+        for sock in socks:
+            sock.close()
+        thread.join(timeout=5)
