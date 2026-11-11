@@ -260,3 +260,174 @@ def test_token_endpoint_errors_expose_method_path_status_only_and_never_tokens(
     assert "401" in exc_text
     _assert_exception_has_no_tokens(excinfo)
     _assert_no_tokens(caplog.text)
+
+
+# ---- T056 follow-up: loopback callback server (F1 idle connection, F2 wrong state) ----
+# Real sockets on 127.0.0.1 only (no `no_network` fixture, which blocks connect). No browser,
+# no Google: `open_browser` is a callback that talks to the loopback redirect URI, and the
+# token endpoint is an httpx.MockTransport.
+
+
+def _patch_credentials(monkeypatch, saved):
+    import app.mailbox.oauth as oauth
+
+    monkeypatch.setattr(oauth, "load_client_secret", lambda: {"client_id": FAKE_CLIENT_ID, "client_secret": FAKE_CLIENT_SECRET})
+    monkeypatch.setattr(oauth, "save_refresh_token", lambda secret: saved.append(secret))
+    oauth.clear_cache()
+
+
+def _http_get(redirect_uri: str, query: str) -> int:
+    import http.client
+
+    parsed = urlparse(redirect_uri)
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=5)
+    try:
+        conn.request("GET", "/?" + query)
+        return conn.getresponse().status
+    finally:
+        conn.close()
+
+
+def _run_authorize(oauth, open_browser, *, timeout, transport=None):
+    import threading
+
+    outcome: dict = {}
+
+    def target():
+        try:
+            oauth.authorize(open_browser=open_browser, timeout=timeout, transport=transport)
+            outcome["ok"] = True
+        except BaseException as exc:  # noqa: BLE001 - reported to the test
+            outcome["exc"] = exc
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def test_idle_local_connection_does_not_defeat_the_authorisation_timeout(monkeypatch):
+    import socket
+    import time
+
+    import app.mailbox.oauth as oauth
+
+    _patch_credentials(monkeypatch, [])
+    idle: list[socket.socket] = []
+
+    def open_browser(url):
+        redirect = parse_qs(urlparse(url).query)["redirect_uri"][0]
+        parsed = urlparse(redirect)
+        # Connect and send nothing: a stalled local client.
+        idle.append(socket.create_connection((parsed.hostname, parsed.port), timeout=5))
+
+    started = time.monotonic()
+    thread, outcome = _run_authorize(oauth, open_browser, timeout=0.5)
+    thread.join(timeout=5)
+    try:
+        assert not thread.is_alive(), "authorize() is stuck behind an idle connection"
+        assert isinstance(outcome.get("exc"), TimeoutError)
+        assert time.monotonic() - started < 4
+    finally:
+        for sock in idle:
+            sock.close()
+        thread.join(timeout=5)
+
+
+def test_wrong_or_missing_state_callbacks_are_ignored_and_the_genuine_one_is_accepted(monkeypatch):
+    import threading
+
+    import app.mailbox.oauth as oauth
+
+    saved: list = []
+    _patch_credentials(monkeypatch, saved)
+    statuses: list[int] = []
+    driver: list = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        form = parse_qs(request.content.decode())
+        assert form["code"] == [FAKE_AUTH_CODE]  # only the genuine callback's code is exchanged
+        return httpx.Response(200, json={"access_token": FAKE_ACCESS_TOKEN, "expires_in": 3600, "refresh_token": FAKE_REFRESH_TOKEN})
+
+    def open_browser(url):
+        q = parse_qs(urlparse(url).query)
+        redirect, state = q["redirect_uri"][0], q["state"][0]
+
+        def drive():
+            statuses.append(_http_get(redirect, "code=EVIL_CODE&state=WRONG"))
+            statuses.append(_http_get(redirect, "code=EVIL_CODE"))
+            statuses.append(_http_get(redirect, "code=EVIL_CODE&state=%C3%A9"))  # non-ASCII state
+            statuses.append(_http_get(redirect, "error=access_denied&state=WRONG"))
+            statuses.append(_http_get(redirect, f"code={FAKE_AUTH_CODE}&state={state}"))
+
+        driver.append(threading.Thread(target=drive, daemon=True))
+        driver[0].start()
+
+    thread, outcome = _run_authorize(oauth, open_browser, timeout=10, transport=httpx.MockTransport(handler))
+    thread.join(timeout=15)
+    assert not thread.is_alive()
+    driver[0].join(timeout=5)  # the client may still be reading the final response
+    assert outcome.get("exc") is None, outcome
+    assert outcome.get("ok") is True
+    assert all(s >= 400 for s in statuses[:4])
+    assert statuses[4] == 200
+    assert len(saved) == 1
+
+
+def test_only_bad_state_callbacks_end_in_timeout_not_in_an_early_failure(monkeypatch):
+    import threading
+
+    import app.mailbox.oauth as oauth
+
+    _patch_credentials(monkeypatch, [])
+
+    def open_browser(url):
+        redirect = parse_qs(urlparse(url).query)["redirect_uri"][0]
+        threading.Thread(target=lambda: _http_get(redirect, "code=EVIL_CODE&state=WRONG"), daemon=True).start()
+
+    thread, outcome = _run_authorize(oauth, open_browser, timeout=1.0)
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    assert isinstance(outcome.get("exc"), TimeoutError)
+
+
+def test_drip_feeding_local_client_does_not_defeat_the_authorisation_timeout(monkeypatch):
+    import socket
+    import threading
+    import time
+
+    import app.mailbox.oauth as oauth
+
+    _patch_credentials(monkeypatch, [])
+    stop = threading.Event()
+    socks: list[socket.socket] = []
+
+    def open_browser(url):
+        parsed = urlparse(parse_qs(urlparse(url).query)["redirect_uri"][0])
+
+        def drip():
+            # One byte every 0.2 s of a never-finished request line: each recv stays under any
+            # per-recv timeout, so only an absolute deadline can end it.
+            try:
+                sock = socket.create_connection((parsed.hostname, parsed.port), timeout=5)
+                socks.append(sock)
+                sock.sendall(b"GET /")
+                while not stop.is_set():
+                    sock.sendall(b"a")
+                    time.sleep(0.2)
+            except OSError:
+                pass
+
+        threading.Thread(target=drip, daemon=True).start()
+
+    started = time.monotonic()
+    thread, outcome = _run_authorize(oauth, open_browser, timeout=1.0)
+    thread.join(timeout=5)
+    try:
+        assert not thread.is_alive(), "authorize() is held past its deadline by a drip-feeding client"
+        assert isinstance(outcome.get("exc"), TimeoutError)
+        assert time.monotonic() - started < 4
+    finally:
+        stop.set()
+        for sock in socks:
+            sock.close()
+        thread.join(timeout=5)
