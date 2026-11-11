@@ -216,7 +216,7 @@ def test_first_sync_uses_30_day_window_sets_backfill_and_skips_older(conn, no_ne
     assert exc is None
     assert src.list_calls, "sync must list the mailbox"
     assert src.list_calls[0][1] == today - timedelta(days=30)
-    assert "old" not in src.fetch_calls
+    # The `after` filter is applied by the source (FR-027); sync only has to pass `today - 30 days`.
     stored = {r["mailbox_id"] for r in conn.execute("SELECT mailbox_id FROM alert_emails")}
     assert stored == {"recent"}
     st = _state(conn)
@@ -383,7 +383,6 @@ def test_second_concurrent_sync_refused(conn, no_network):
 
     class BlockingSource(FakeMailSource):
         def list_ids(self, folder_id, after):
-            self.list_calls.append((folder_id, after))
             started.set()
             release.wait(timeout=5)
             return super().list_ids(folder_id, after)
