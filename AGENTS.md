@@ -67,9 +67,9 @@ Do not run anything if any of the three is unset or points into the repository o
    - `python -m compileall -q app tests`
    - `python -m pytest -q -m "not slow"` (slow tests run at phase checkpoints)
    - `python tests/fixtures/anonymise_eml.py --check tests/fixtures/emails`
-   - `git diff --name-only jorgevr/spec-kit...HEAD` lists nothing under `data/`, no `config/needs.yaml`,
+   - `git diff --name-only main...HEAD` lists nothing under `data/`, no `config/needs.yaml`,
      `config/zone_aliases.yaml`, `client_secret*`, `token*`, and no `.eml` outside `tests/fixtures/emails/`
-   - `git diff jorgevr/spec-kit...HEAD -- requirements.txt` is empty
+   - `git diff main...HEAD -- requirements.txt` is empty
 4. **`tasks.md`**: under a coordinator, do not edit it (the coordinator ticks tasks). If the user runs
    `/speckit-implement` directly, tick tasks as that command specifies.
 5. **Handoff** (under a coordinator only): write `specs/001-alert-email-import/handoffs/T0NN-<tests|dev>.md`
