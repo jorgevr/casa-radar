@@ -13,7 +13,7 @@
 - DPAPI uses a fixed app-specific entropy string (`casa-radar-refresh-token`) as extra binding; it is not a secret.
 - `load_refresh_token()` returns None when no token is stored (callers: treat as "not authorised").
 - Error messages never include file contents.
-- `decisions.md` does not exist in the repo; nothing to follow.
+- decisions.md (read from jorgevr/Implementation, T055 section): implementation already matches (Secret .value + redacted repr/str; ValueError without secrets for repo-local CASA_APPDATA, resolved-path comparison).
 
 ## Reviewer should check
 - DPAPI ctypes call signature (CryptProtectData/CryptUnprotectData arg order, LocalFree of output blob) — round trip verified on Windows by tests.
