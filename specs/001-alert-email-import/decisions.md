@@ -50,6 +50,13 @@ They do not change the spec or plan. Constitution articles I–X still override 
   - It has no side effects and raises nothing.
 - These keys and values are not pinned by the tests. They are recorded in the T058 handoff. Moving them into `contracts/` is a separate spec change for the user to approve.
 
+### T058 addenda (user-approved after implementation)
+
+- The summary may carry extra keys the tests require: `run_id`, `notice` (e.g. "folder identity changed"), and `message: "sync already running"` on refusal (`error` stays `None`).
+- Folder-not-found uses error code `folder_not_found`; the Spanish text pinned by the tests goes in `mailbox_state.last_error`.
+- Message order: `sync` keeps the order the source gives. `GmailSource` lists newest-first, so real syncs are not strictly oldest-first. Resuming still works because stored ids are skipped and the 2-day overlap re-lists recent mail.
+- Two tests in `tests/test_sync.py` were wrong and were corrected with the user's approval: the duplicate `list_calls.append` in `BlockingSource`, and the `"old" not in fetch_calls` assertion in the 30-day test (Gmail applies `after` server-side).
+
 ## T059: scheduler
 
 - The scheduler tick is covered by tests written first. They go beyond what `tasks.md` names, so they are listed as an extension in the handoff.
