@@ -645,3 +645,100 @@ def test_scheduler_clean_shutdown_no_real_sync(no_external_network, monkeypatch)
         # not configured by default => scheduler must not run real sync
         pass
     assert real_calls["n"] == 0
+
+
+# ── T059 follow-up N1: the scheduler survives state-read errors ──
+
+def test_scheduler_survives_state_read_errors_and_recovers(no_external_network):
+    import sqlite3
+    import app.main as m
+
+    good = {"auth_state": "valid", "auto_sync": "on", "interval_minutes": 7}
+    reads = {"n": 0}
+    sleeps = []
+    syncs = []
+
+    def flaky_state():
+        reads["n"] += 1
+        if reads["n"] <= 3:  # interval read, decision read, next interval read
+            raise sqlite3.OperationalError("database is locked")
+        return dict(good)
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 4:
+            raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(m.mailbox_scheduler(
+            get_state=flaky_state,
+            run_sync=lambda: syncs.append(1),
+            is_running=lambda: False,
+            sleep=fake_sleep,
+        ))
+
+    default = m.SYNC_INTERVAL_DEFAULT_MINUTES * 60
+    # unreadable state -> default interval; readable again -> interval from state
+    assert sleeps == [default, default, 7 * 60, 7 * 60]
+    # tick 1 skipped (decision read failed); syncs after sleeps 2 and 3 (state readable again)
+    assert len(syncs) == 2
+
+
+def test_scheduler_state_read_error_in_decision_only_skips_that_tick(no_external_network):
+    import sqlite3
+    import app.main as m
+
+    reads = {"n": 0}
+    sleeps = []
+    syncs = []
+
+    def state():
+        reads["n"] += 1
+        if reads["n"] == 2:  # the decision read of the first tick
+            raise sqlite3.OperationalError("database is locked")
+        return {"auth_state": "valid", "auto_sync": "on", "interval_minutes": 15}
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        if len(sleeps) >= 3:
+            raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(m.mailbox_scheduler(
+            get_state=state, run_sync=lambda: syncs.append(1),
+            is_running=lambda: False, sleep=fake_sleep))
+    assert sleeps == [15 * 60] * 3
+    assert len(syncs) == 1  # tick 1 skipped (read error), tick 2 synced, sleep 3 cancels
+
+
+def test_scheduler_cancellation_during_state_read_still_propagates(no_external_network):
+    import app.main as m
+
+    def cancelling_state():
+        raise asyncio.CancelledError()
+
+    async def fake_sleep(seconds):
+        pass
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(m.mailbox_scheduler(
+            get_state=cancelling_state, run_sync=lambda: None,
+            is_running=lambda: False, sleep=fake_sleep))
+
+
+def test_scheduler_accepts_async_get_state(no_external_network):
+    import app.main as m
+    sleeps = []
+
+    async def astate():
+        return {"auth_state": "valid", "auto_sync": "on", "interval_minutes": 3}
+
+    async def fake_sleep(seconds):
+        sleeps.append(seconds)
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(m.mailbox_scheduler(
+            get_state=astate, run_sync=lambda: None,
+            is_running=lambda: False, sleep=fake_sleep))
+    assert sleeps == [3 * 60]
