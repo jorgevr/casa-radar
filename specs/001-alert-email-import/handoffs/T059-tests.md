@@ -102,3 +102,9 @@ Run (isolated env under `%TEMP%\casa-agent-T059-tests`, copied `needs.example.ya
 - Confirm the chosen 409-vs-400 codes for not-configured/revoked sync (and not-configured authorise) match intended UX; they are explicit and documented above.
 - Confirm `mailbox_scheduler` signature (keyword-only injected callables) is acceptable; it is the minimal seam to test interval/skip/error/shutdown without real time or network while keeping `create_app` default unchanged.
 - `test_scheduler_clean_shutdown_no_real_sync` passes `enable_mailbox_scheduler=True` to `create_app`; developer must add this kwarg (default False).
+
+## Approved follow-up fixes (2026-11-12, user-approved)
+
+- Added local `no_external_network` fixture in `tests/test_api_mailbox.py` (wraps `socket.socket.connect`/`socket.create_connection`: loopback `127.0.0.1`/`::1`/`localhost` allowed, all other addresses raise `AssertionError("network access in test")`). Used instead of `no_network` only in the six scheduler tests that run `asyncio.run()`/`TestClient` (`runs_at_interval_from_state`, `uses_default_interval_when_missing`, `skips_when_not_valid_or_not_on`, `skips_tick_while_running`, `source_error_does_not_stop_schedule`, `clean_shutdown_no_real_sync`); all other tests still use `no_network`. `tests/conftest.py` unchanged.
+- Added `test_no_external_network_fixture_blocks_non_loopback_and_allows_loopback` proving non-loopback `203.0.113.1` is refused and a loopback connect to a locally bound listening socket is allowed.
+- `test_mailbox_get_exact_keys_and_no_secrets`: seeds `last_success_at` as `(datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")` (real clock, same as app) and asserts equality against that computed value so `out_of_date` can be `False`; other fixed-date uses left unchanged. No other assertions changed or weakened.

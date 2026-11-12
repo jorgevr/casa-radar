@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import socket
 import threading
 import time
 from datetime import datetime, timedelta
@@ -63,6 +64,34 @@ def no_aliases(tmp_path, monkeypatch):
     # keep zone/category side effects out of these tests
     import app.zones as zones
     monkeypatch.setattr(zones, "ALIASES_PATH", tmp_path / "zone_aliases.yaml")
+
+
+@pytest.fixture
+def no_external_network(monkeypatch):
+    """Allow loopback connects (needed by asyncio/TestClient on Windows); block all others."""
+    _orig_connect = socket.socket.connect
+    _orig_create_connection = socket.create_connection
+
+    def _is_loopback(host):
+        if host is None:
+            return False
+        h = str(host).lower()
+        return h in ("127.0.0.1", "::1", "localhost")
+
+    def _safe_connect(self, address):
+        host = address[0] if isinstance(address, tuple) and address else None
+        if _is_loopback(host):
+            return _orig_connect(self, address)
+        raise AssertionError("network access in test")
+
+    def _safe_create_connection(address, *args, **kwargs):
+        host = address[0] if isinstance(address, tuple) and address else address
+        if _is_loopback(host):
+            return _orig_create_connection(address, *args, **kwargs)
+        raise AssertionError("network access in test")
+
+    monkeypatch.setattr(socket.socket, "connect", _safe_connect)
+    monkeypatch.setattr(socket, "create_connection", _safe_create_connection)
 
 
 @pytest.fixture
@@ -153,7 +182,9 @@ def test_mailbox_get_exact_keys_and_no_secrets(client, db_path, no_network, monk
     # plant fake secret strings in env/state-adjacent places the impl might read
     monkeypatch.setenv("FAKE_REFRESH_TOKEN", FAKE_SECRET)
     c = db.connect(dbp)
-    seed_mailbox(c, last_error=None)
+    # compute from current time so out_of_date is False on the real clock (app uses datetime.now())
+    recent_success = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    seed_mailbox(c, last_error=None, last_success_at=recent_success)
     # even if someone wrongly stored a secret-ish string, GET must not echo it;
     # but we don't store it - we just ensure response never contains our sentinels
     resp = client.get("/api/mailbox")
@@ -167,7 +198,7 @@ def test_mailbox_get_exact_keys_and_no_secrets(client, db_path, no_network, monk
     assert data["auto_sync"] == "on"
     assert data["interval_minutes"] == 15
     assert data["backfill_from"] == "2026-09-28"
-    assert data["last_success_at"] == "2026-10-28T11:45:02"
+    assert data["last_success_at"] == recent_success
     assert data["last_attempt_status"] == "ok"
     assert data["last_error"] is None
     assert data["out_of_date"] is False
@@ -449,7 +480,33 @@ def test_scheduler_seam_constants_and_tick_decision(no_network):
         assert m.mailbox_should_sync(st) is False, st
 
 
-def test_scheduler_runs_at_interval_from_state(no_network):
+def test_no_external_network_fixture_blocks_non_loopback_and_allows_loopback(no_external_network):
+    # refuses non-loopback (documentation address; must raise before any real attempt)
+    with pytest.raises(AssertionError, match="network access in test"):
+        socket.create_connection(("203.0.113.1", 80), timeout=0.01)
+    with pytest.raises(AssertionError, match="network access in test"):
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            s.connect(("203.0.113.1", 80))
+        finally:
+            s.close()
+    # allows loopback socketpair/connect to a locally bound listening socket
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        port = srv.getsockname()[1]
+        cli = socket.create_connection(("127.0.0.1", port), timeout=1)
+        try:
+            conn, _ = srv.accept()
+            conn.close()
+        finally:
+            cli.close()
+    finally:
+        srv.close()
+
+
+def test_scheduler_runs_at_interval_from_state(no_external_network):
     import app.main as m
 
     calls = []
@@ -480,7 +537,7 @@ def test_scheduler_runs_at_interval_from_state(no_network):
     assert len(calls) == 3
 
 
-def test_scheduler_uses_default_interval_when_missing(no_network):
+def test_scheduler_uses_default_interval_when_missing(no_external_network):
     import app.main as m
     sleeps = []
 
@@ -498,7 +555,7 @@ def test_scheduler_uses_default_interval_when_missing(no_network):
     assert sleeps[0] == 15 * 60
 
 
-def test_scheduler_skips_when_not_valid_or_not_on(no_network):
+def test_scheduler_skips_when_not_valid_or_not_on(no_external_network):
     import app.main as m
     for st in (
         {"auth_state": "revoked", "auto_sync": "paused_auth", "interval_minutes": 15},
@@ -521,7 +578,7 @@ def test_scheduler_skips_when_not_valid_or_not_on(no_network):
         assert calls == [], st
 
 
-def test_scheduler_skips_tick_while_running(no_network):
+def test_scheduler_skips_tick_while_running(no_external_network):
     import app.main as m
     calls = []
     ticks = {"n": 0}
@@ -541,7 +598,7 @@ def test_scheduler_skips_tick_while_running(no_network):
     assert calls == []
 
 
-def test_scheduler_source_error_does_not_stop_schedule(no_network):
+def test_scheduler_source_error_does_not_stop_schedule(no_external_network):
     import app.main as m
     calls = []
     ticks = {"n": 0}
@@ -569,7 +626,7 @@ def test_scheduler_source_error_does_not_stop_schedule(no_network):
     assert len(calls) == 3  # continued after error and after error-return
 
 
-def test_scheduler_clean_shutdown_no_real_sync(no_network, monkeypatch):
+def test_scheduler_clean_shutdown_no_real_sync(no_external_network, monkeypatch):
     # starting/stopping app lifespan must cancel scheduler cleanly with no leaked
     # thread and must never start a real network/sync; we monkeypatch sync to flag
     import app.main as m
