@@ -273,12 +273,12 @@ async function emClick(e){const b=e.target.closest('button[data-em]');if(!b)retu
 function renderData(){
   $('#main').innerHTML=`<div class="card" id="mbc"><h3 style="margin-top:0">Buzón (Gmail)</h3>
   <p class="mut">1. Guarda el archivo <code>client_secret.json</code> de tu proyecto de Google Cloud en la carpeta de la aplicación: <code id="mbf">desconocida</code></p>
-  <p class="mut">2. Escribe el nombre de la etiqueta de Gmail con las alertas de Idealista y guárdala.</p>
-  <p class="mut">3. Pulsa Autorizar: se abrirá el navegador de este equipo para que apruebes el permiso.</p>
+  <p class="mut">2. Pulsa Autorizar: se abrirá el navegador de este equipo para que apruebes el permiso.</p>
+  <p class="mut">3. Escribe el nombre de la etiqueta de Gmail con las alertas de Idealista y guárdala.</p>
   <p class="mut">El permiso de solo lectura de Google permite a esta aplicación leer todo tu correo; Casa Radar solo lee la etiqueta que elijas y no puede cambiar nada. Puedes revocarlo en cualquier momento en <b>myaccount.google.com/permissions</b>.</p>
   <div class="kv" style="margin:8px 0"><span class="mut">Estado</span><span id="mbs">desconocido</span></div>
-  <div class="row2"><label style="flex:1;min-width:200px">Etiqueta (carpeta) de Gmail<input id="mbl" placeholder="Idealista" autocomplete="off"></label><button class="b" id="mbsave">Guardar etiqueta</button></div>
-  <div class="row2" style="margin-top:10px"><button class="b p" id="mbauth">Autorizar</button><button class="b" id="mbdis">Desconectar</button></div>
+  <div class="row2" style="margin-top:0"><button class="b p" id="mbauth">Autorizar</button><button class="b" id="mbdis">Desconectar</button></div>
+  <div class="row2" style="margin-top:10px"><label style="flex:1;min-width:200px">Etiqueta (carpeta) de Gmail<input id="mbl" placeholder="Idealista" autocomplete="off"></label><button class="b" id="mbsave">Guardar etiqueta</button><span class="mut" id="mbhint"></span></div>
   <div id="mbmsg" style="margin-top:8px"></div></div>
   <div class="card" id="cat"><span class="mut">Cargando categorías…</span></div>
   <div class="card" id="em"><span class="mut">Cargando emails…</span></div>
@@ -354,7 +354,7 @@ function drawMbc(){const s=$('#mbs');if(!s)return;
   s.innerHTML=!mbx?'desconocido':mbxState(mbx.auth_state)+(mbx.account?' · '+esc(mbx.account):'');
   $('#mbauth').disabled=!!authWait;$('#mbauth').textContent=authWait?'Esperando autorización…':mbx&&mbx.auth_state==='revoked'?'Autorizar de nuevo':'Autorizar';
   $('#mbdis').disabled=!mbx||mbx.auth_state==='not_configured';
-  $('#mbsave').disabled=folderBusy;
+  const ncs=!!mbx&&mbx.auth_state==='not_configured';$('#mbsave').disabled=folderBusy||ncs;$('#mbhint').textContent=ncs?'Autoriza primero el buzón':'';
   const l=$('#mbl');if(l&&mbx&&!l.dataset.touched&&!l.value&&mbx.label_name)l.value=mbx.label_name;
   $('#mbmsg').innerHTML=authWait?'<span class="mut">Esperando a que apruebes el permiso en el navegador (hasta 5 minutos)…</span>':authMsg}
 function mbcInit(){const l=$('#mbl');l.oninput=()=>{l.dataset.touched='1'};
@@ -364,7 +364,7 @@ function mbcInit(){const l=$('#mbl');l.oninput=()=>{l.dataset.touched='1'};
   $('#mbsave').onclick=async()=>{const name=l.value.trim();
     if(!name){authMsg='<span class="warn">Escribe el nombre de la etiqueta.</span>';drawMbc();return}
     folderBusy=true;drawMbc();const r=await mbxCall('/folder','PUT',{label_name:name});folderBusy=false;
-    const t=r.status===200?null:r.status===404?'Carpeta «'+name+'» no encontrada en Gmail.':r.status===400?'Nombre de etiqueta no válido.':r.status===409?'El permiso fue revocado: vuelve a autorizar.':r.status===502?'No se pudo contactar con Gmail. Inténtalo de nuevo.':r.status===0?'Sin conexión con el servidor local.':'No se pudo guardar la etiqueta (código '+r.status+').';
+    const t=r.status===200?null:r.status===404?'Carpeta «'+name+'» no encontrada en Gmail.':r.status===400?'Nombre de etiqueta no válido.':r.status===409?(mbx&&mbx.auth_state==='revoked'?'El permiso fue revocado: vuelve a autorizar.':'Autoriza primero el buzón.'):r.status===502?'No se pudo contactar con Gmail. Inténtalo de nuevo.':r.status===0?'Sin conexión con el servidor local.':'No se pudo guardar la etiqueta (código '+r.status+').';
     authMsg=t?`<span class="bad">${esc(t)}</span>`:'<span class="good">Etiqueta guardada.</span>';await mbxRefresh()};
   $('#mbdis').onclick=async()=>{if(!confirm('¿Desconectar el buzón? Se borrará la autorización guardada en este equipo. Para revocar el permiso del todo, hazlo después en myaccount.google.com/permissions.'))return;
     const r=await mbxCall('/disconnect','POST');authWait=null;
