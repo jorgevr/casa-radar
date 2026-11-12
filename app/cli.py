@@ -213,7 +213,11 @@ def _sync_command(conn, wait):
                 print("Se agotó la espera: sigue habiendo una sincronización en curso.", file=sys.stderr)
                 return 3
             _sleep(SYNC_WAIT_POLL_SECONDS)
-    result = _run_sync(conn, _make_source(conn, alerts_sync.read_state(conn)), "sync_manual")
+    try:
+        result = _run_sync(conn, _make_source(conn, alerts_sync.read_state(conn)), "sync_manual")
+    except Exception as exc:  # class name only: messages may carry tokens or email text
+        print(f"Sincronización detenida: error inesperado ({type(exc).__name__}).", file=sys.stderr)
+        return 2
     if result["status"] == "already_running":
         print("Ya hay una sincronización en curso.", file=sys.stderr)
         return 3
