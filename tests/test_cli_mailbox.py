@@ -459,3 +459,104 @@ class TestGeneral:
         doc = cli.__doc__ or ""
         assert "mailbox-setup" in doc
         assert "sync" in doc
+
+
+# --- sync: unexpected exceptions (T060 follow-up) ---
+
+class UnexpectedBoom(Exception):
+    """Unexpected error whose message carries planted secrets."""
+    def __str__(self):
+        return f"kaboom {FAKE_TOKEN} {FAKE_SECRET} cuerpo del email"
+
+
+class TestSyncUnexpectedErrors:
+    def _assert_class_only(self, out, err):
+        blob = out + err
+        assert "UnexpectedBoom" in err
+        assert "kaboom" not in blob
+        assert "cuerpo del email" not in blob
+        assert "Traceback" not in blob
+        _assert_no_secrets(out, err)
+
+    def test_run_sync_unexpected_exception_exits_2_class_name_only(self, monkeypatch, no_network):
+        conn = db.connect()
+        _ensure_mailbox_state(conn)
+        calls = {"sync": 0}
+
+        def fake_run_sync(c, source, kind="sync_manual"):
+            calls["sync"] += 1
+            raise UnexpectedBoom()
+
+        monkeypatch.setattr(cli, "_make_source", lambda c, s=None: FakeSource())
+        monkeypatch.setattr(cli, "_run_sync", fake_run_sync)
+
+        code, out, err = _run(["sync"], monkeypatch=monkeypatch)
+
+        assert code == 2
+        assert calls["sync"] == 1
+        self._assert_class_only(out, err)
+
+    def test_make_source_unexpected_exception_exits_2_and_sync_not_called(self, monkeypatch, no_network):
+        conn = db.connect()
+        _ensure_mailbox_state(conn)
+        calls = {"sync": 0}
+
+        def boom_source(c, s=None):
+            raise UnexpectedBoom()
+
+        def fake_run_sync(c, source, kind="sync_manual"):
+            calls["sync"] += 1
+            return {}
+
+        monkeypatch.setattr(cli, "_make_source", boom_source)
+        monkeypatch.setattr(cli, "_run_sync", fake_run_sync)
+
+        code, out, err = _run(["sync"], monkeypatch=monkeypatch)
+
+        assert code == 2
+        assert calls["sync"] == 0
+        self._assert_class_only(out, err)
+
+    def test_wait_then_unexpected_exception_exits_2_single_sync(self, monkeypatch, no_network):
+        conn = db.connect()
+        running = _insert_run(conn, status="running", finished_at=None)
+        _ensure_mailbox_state(conn, running_run_id=running)
+        t = {"now": datetime(2026, 10, 28, 12, 0, 0)}
+
+        def fake_sleep(seconds):
+            t["now"] += timedelta(seconds=seconds)
+            c = db.connect()
+            c.execute("UPDATE import_runs SET status='ok', finished_at=? WHERE run_id=?",
+                      ("2026-10-28T12:00:01", running))
+            c.execute("UPDATE mailbox_state SET running_run_id=NULL WHERE id=1")
+            c.commit()
+
+        calls = {"sync": 0}
+
+        def fake_run_sync(c, source, kind="sync_manual"):
+            calls["sync"] += 1
+            raise UnexpectedBoom()
+
+        monkeypatch.setattr(cli, "_clock", lambda: t["now"])
+        monkeypatch.setattr(cli, "_sleep", fake_sleep)
+        monkeypatch.setattr(cli, "_make_source", lambda c, s=None: FakeSource())
+        monkeypatch.setattr(cli, "_run_sync", fake_run_sync)
+
+        code, out, err = _run(["sync", "--wait"], monkeypatch=monkeypatch)
+
+        assert code == 2
+        assert calls["sync"] == 1
+        self._assert_class_only(out, err)
+
+    def test_keyboard_interrupt_from_run_sync_propagates(self, monkeypatch, no_network):
+        conn = db.connect()
+        _ensure_mailbox_state(conn)
+
+        def fake_run_sync(c, source, kind="sync_manual"):
+            raise KeyboardInterrupt()
+
+        monkeypatch.setattr(cli, "_make_source", lambda c, s=None: FakeSource())
+        monkeypatch.setattr(cli, "_run_sync", fake_run_sync)
+
+        with pytest.raises(KeyboardInterrupt):
+            _run(["sync"], monkeypatch=monkeypatch)
