@@ -65,6 +65,16 @@ They do not change the spec or plan. Constitution articles I–X still override 
   - The tick never triggers a real sync.
 - Tests inject a fake clock and a fake `sync`. They use no real sleeps.
 
+## T060: CLI (`mailbox-setup`, `sync`), decided by the user
+
+- A sync counts as running when `sync()` returns `already_running`, or when `mailbox_state.running_run_id` is set and that `import_runs` row has status `running`.
+- `sync` without `--wait` exits 3 immediately when a sync is running.
+- `sync --wait` polls that state until it clears, then runs. The timeout is a named constant (default 10 minutes, not an inline literal). On timeout it exits 3. A stale `running_run_id` from a crashed process therefore cannot block forever.
+- The `sync` output is rebuilt from the stored import run: after `sync()`, read the run by its `run_id` (and its email outcomes, the same data the runs API and `import-emails` use) and print it with the existing `format_import_summary`, followed by `Última sincronización correcta: <time>`.
+- `sync` exit codes: 0 ok with no failed email; 1 an email failed; 2 the sync stopped (auth, folder, network: `status == "error"`); 3 a sync is already running.
+- `mailbox-setup` without `--label` and without an interactive stdin authorises nothing, prints a Spanish message asking for `--label NOMBRE`, and exits 2. It never guesses a label.
+- Secrets are never printed. The tests never open a browser or contact Google.
+
 ## Open items for the user
 
 - Confirm that the T059 skip tests are in scope, or add a task for them.
