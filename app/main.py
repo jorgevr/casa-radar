@@ -94,12 +94,29 @@ def mailbox_should_sync(state: dict | None, *, now=None, sync_running: bool = Fa
     return state.get("auth_state") == "valid" and state.get("auto_sync") == "on"
 
 
+async def _read_scheduler_state(get_state) -> tuple[dict | None, bool]:
+    """(state, ok). get_state may be a plain callable or return an awaitable; any Exception -> (None, False)."""
+    try:
+        state = get_state()
+        if inspect.isawaitable(state):
+            state = await state
+        return state, True
+    except Exception as exc:  # e.g. a transient 'database is locked'; never ends the schedule
+        log.warning("mailbox scheduler could not read state: %s", type(exc).__name__)
+        return None, False
+
+
 async def mailbox_scheduler(*, get_state, run_sync, is_running, sleep=asyncio.sleep, interval_seconds=None) -> None:
-    """Sleep one interval, then sync if the state allows; a failing sync never stops the schedule."""
+    """Sleep one interval, then sync if the state allows; neither a failing sync nor an unreadable state stops the schedule."""
     while True:
-        wait = interval_seconds if interval_seconds is not None else mailbox_interval_minutes(get_state()) * 60
+        if interval_seconds is not None:
+            wait = interval_seconds
+        else:
+            state, _ok = await _read_scheduler_state(get_state)
+            wait = mailbox_interval_minutes(state) * 60  # None -> default interval
         await sleep(wait)
-        if not mailbox_should_sync(get_state(), sync_running=is_running()):
+        state, ok = await _read_scheduler_state(get_state)
+        if not ok or not mailbox_should_sync(state, sync_running=is_running()):
             continue
         try:
             result = run_sync()
@@ -144,8 +161,11 @@ def create_app(db_path: str | None = None, needs_path: str | None = None, *,
     async def lifespan(_app):
         task = None
         if enable_mailbox_scheduler:
+            async def scheduler_state():  # sqlite read off the event-loop thread
+                return await asyncio.to_thread(_scheduler_state, db_path)
+
             task = asyncio.create_task(mailbox_scheduler(
-                get_state=lambda: _scheduler_state(db_path), run_sync=scheduled_sync,
+                get_state=scheduler_state, run_sync=scheduled_sync,
                 is_running=sync_guard.locked, sleep=asyncio.sleep))
         try:
             yield
