@@ -7,17 +7,25 @@ import json
 import math
 import os
 import re
+import asyncio
+import inspect
+import logging
 import tempfile
+import threading
+from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 
 import yaml
 from fastapi import Body, FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from typing import Any
 
-from . import alerts, categories, db, derive, mortgage, scoring
+from . import alerts, alerts_sync, categories, db, derive, mortgage, scoring
+from .mailbox import AuthRevoked, FolderNotFound, SourceUnavailable
+from .mailbox import credentials, oauth
 from .etl import indicators as ind_etl
 from .etl import overpass
 from .listings import upsert_listing
@@ -30,9 +38,127 @@ PROVIDERS_PATH = os.environ.get("CASA_PROVIDERS", str(db.ROOT / "config" / "prov
 UNIT_MAX = 1e12  # exclusive upper bound for a user-entered price or area (far above any real value)
 SQLITE_INT_MAX = 2**63 - 1  # largest integer SQLite stores
 
+SYNC_INTERVAL_DEFAULT_MINUTES = 15  # R6: scheduled sync interval when mailbox_state gives none
+RUN_ID_WAIT_SECONDS = 0.5           # how long "sync now" waits for the worker to open its run
+log = logging.getLogger("casa.mailbox")
 
-def create_app(db_path: str | None = None, needs_path: str | None = None) -> FastAPI:
-    app = FastAPI(title="Casa Radar")
+REAUTHORISE_STEPS = [  # FR-029: exact steps, UI text in Spanish
+    "Pulsa «Autorizar de nuevo» en esta pantalla.",
+    "Se abrirá el navegador: elige la cuenta de Gmail del buzón y acepta el acceso de solo lectura.",
+    "Cuando el navegador indique que puedes cerrar la pestaña, vuelve aquí.",
+    "Si no aparece la pantalla de Google, revoca el acceso de Casa Radar en tu cuenta de Google y repite desde el paso 1.",
+]
+
+_gmail_client = None
+_gmail_client_lock = threading.Lock()
+
+
+def get_mail_source():
+    """The real mail source (Gmail, read-only). The one shared HTTP client is closed on shutdown."""
+    global _gmail_client
+    import httpx
+    from .mailbox import gmail
+
+    with _gmail_client_lock:
+        if _gmail_client is None:
+            _gmail_client = httpx.Client(base_url=gmail.BASE_URL, timeout=30.0)
+        client = _gmail_client
+    return gmail.GmailSource(client=client, access_token=oauth.access_token)
+
+
+def _close_mail_client() -> None:
+    global _gmail_client
+    with _gmail_client_lock:
+        client, _gmail_client = _gmail_client, None
+    if client is not None:
+        client.close()
+
+
+def delete_token() -> None:
+    credentials.delete_token()
+
+
+def sync_mailbox(conn, source, kind: str = "sync_manual") -> dict:
+    return alerts_sync.sync(conn, source, kind)
+
+
+def mailbox_interval_minutes(state: dict | None) -> int:
+    v = (state or {}).get("interval_minutes")
+    return v if isinstance(v, int) and not isinstance(v, bool) and v > 0 else SYNC_INTERVAL_DEFAULT_MINUTES
+
+
+def mailbox_should_sync(state: dict | None, *, now=None, sync_running: bool = False) -> bool:
+    """One scheduler tick: sync only an authorised, auto-synced mailbox, and never over a running sync."""
+    if sync_running or not state:
+        return False
+    return state.get("auth_state") == "valid" and state.get("auto_sync") == "on"
+
+
+async def mailbox_scheduler(*, get_state, run_sync, is_running, sleep=asyncio.sleep, interval_seconds=None) -> None:
+    """Sleep one interval, then sync if the state allows; a failing sync never stops the schedule."""
+    while True:
+        wait = interval_seconds if interval_seconds is not None else mailbox_interval_minutes(get_state()) * 60
+        await sleep(wait)
+        if not mailbox_should_sync(get_state(), sync_running=is_running()):
+            continue
+        try:
+            result = run_sync()
+            if inspect.isawaitable(result):
+                await result
+        except Exception as exc:  # source errors are already in the summary; keep the schedule alive
+            log.warning("scheduled mailbox sync failed: %s", type(exc).__name__)
+
+
+def _scheduler_state(db_path: str | None) -> dict | None:
+    c = db.connect(db_path)
+    try:
+        return alerts_sync.read_state(c)
+    finally:
+        c.close()
+
+
+def create_app(db_path: str | None = None, needs_path: str | None = None, *,
+               enable_mailbox_scheduler: bool = False) -> FastAPI:
+    sync_guard = threading.Lock()  # held while a mailbox sync runs (manual or scheduled)
+
+    def read_state() -> dict | None:
+        return alerts_sync.read_state(conn)
+
+    def run_guarded(kind: str) -> dict | None:
+        """Scheduled sync with its own connection; None when another sync holds the guard."""
+        if not sync_guard.acquire(blocking=False):
+            return None
+        try:
+            wconn = db.connect(db_path)
+            try:
+                return sync_mailbox(wconn, get_mail_source(), kind)
+            finally:
+                wconn.close()
+        finally:
+            sync_guard.release()
+
+    async def scheduled_sync() -> None:
+        await asyncio.to_thread(run_guarded, "sync_scheduled")
+
+    @asynccontextmanager
+    async def lifespan(_app):
+        task = None
+        if enable_mailbox_scheduler:
+            task = asyncio.create_task(mailbox_scheduler(
+                get_state=lambda: _scheduler_state(db_path), run_sync=scheduled_sync,
+                is_running=sync_guard.locked, sleep=asyncio.sleep))
+        try:
+            yield
+        finally:
+            if task is not None:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            _close_mail_client()
+
+    app = FastAPI(title="Casa Radar", lifespan=lifespan)
     conn = db.connect(db_path)
     ind_etl.seed_madrid_districts(conn)
 
@@ -322,6 +448,133 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
             raise HTTPException(404, "run not found")
         return out
 
+    # ── mailbox ─────────────────────────────────────────────────────────────
+    def error(status: int, message: str) -> JSONResponse:
+        return JSONResponse({"error": message}, status_code=status)
+
+    def ensure_state_row() -> None:
+        conn.execute("INSERT OR IGNORE INTO mailbox_state(id) VALUES(1)")
+        conn.commit()
+
+    @app.get("/api/mailbox")
+    def get_mailbox():
+        st = read_state()
+        if st is None:
+            st = {"auth_state": "not_configured", "auto_sync": "on"}
+        running = st.get("running_run_id") is not None
+        try:
+            stale = alerts_sync.out_of_date(st if "last_attempt_status" in st else None, datetime.now())
+        except ValueError:  # unreadable timestamp: report out of date rather than guess
+            stale = True
+        return {
+            "provider": st.get("provider"), "account": st.get("account"), "label_name": st.get("label_name"),
+            "auth_state": st.get("auth_state"), "auto_sync": st.get("auto_sync"),
+            "interval_minutes": mailbox_interval_minutes(st), "backfill_from": st.get("backfill_from"),
+            "last_success_at": st.get("last_success_at"), "last_attempt_status": st.get("last_attempt_status"),
+            "last_error": st.get("last_error"), "last_error_at": st.get("last_error_at"),
+            "out_of_date": stale, "running": running,
+            "progress": ({"done": st.get("progress_done") or 0, "total": st.get("progress_total") or 0}
+                         if running else None),
+            "reauthorise_steps": list(REAUTHORISE_STEPS) if st.get("auth_state") == "revoked" else None,
+            "app_folder": str(credentials.app_dir()),
+        }
+
+    def authorise_worker() -> None:
+        wconn = db.connect(db_path)
+        try:
+            wconn.execute("INSERT OR IGNORE INTO mailbox_state(id) VALUES(1)")
+            wconn.commit()
+            try:
+                oauth.authorize()  # opens the browser and waits for the consent redirect
+            except Exception as exc:  # error class only: messages may carry tokens
+                log.warning("mailbox authorisation failed: %s", type(exc).__name__)
+                alerts_sync.write_state(
+                    wconn, last_error=f"autorización no completada ({type(exc).__name__})",
+                    last_error_at=datetime.now().isoformat(timespec="seconds"))
+                return
+            fields = {"provider": "gmail", "auth_state": "valid", "auto_sync": "on",
+                      "last_error": None, "last_error_at": None}
+            try:
+                fields["account"] = get_mail_source().account()
+            except Exception:  # the account label is cosmetic; authorisation itself succeeded
+                pass
+            alerts_sync.write_state(wconn, **fields)
+        finally:
+            wconn.close()
+
+    @app.post("/api/mailbox/authorise", status_code=202)
+    def mailbox_authorise():
+        threading.Thread(target=authorise_worker, name="mailbox-authorise", daemon=True).start()
+        return {"waiting": True}
+
+    @app.put("/api/mailbox/folder")
+    def mailbox_folder(body: Any = Body(default=None)):
+        name = body.get("label_name") if isinstance(body, dict) else None
+        if not isinstance(name, str) or not name.strip():
+            return error(400, 'se esperaba {"label_name": "<carpeta>"}')
+        try:
+            folder_id = get_mail_source().resolve_folder(name)
+        except FolderNotFound:
+            return error(404, f"folder {name} not found")
+        except AuthRevoked:
+            return error(409, "authorisation revoked")
+        except SourceUnavailable:
+            return error(502, "mailbox unavailable")
+        ensure_state_row()
+        alerts_sync.write_state(conn, label_name=name, label_id=folder_id)
+        return {"ok": True, "label_name": name}
+
+    @app.post("/api/mailbox/sync")
+    def mailbox_sync():
+        st = read_state()
+        if st is None or st.get("auth_state") == "not_configured":
+            return error(409, "mailbox not configured")
+        if st.get("auth_state") == "revoked" or st.get("auto_sync") == "paused_auth":
+            return error(409, "sync not available: authorisation revoked")
+        if not sync_guard.acquire(blocking=False):
+            return error(409, "sync already running")
+        done = threading.Event()
+        box: dict = {}
+
+        def worker() -> None:  # the guard is held for the whole run and released here
+            try:
+                wconn = db.connect(db_path)
+                try:
+                    box["summary"] = sync_mailbox(wconn, get_mail_source(), "sync_manual")
+                finally:
+                    wconn.close()
+            except BaseException as exc:
+                log.warning("mailbox sync failed: %s", type(exc).__name__)
+            finally:
+                done.set()
+                sync_guard.release()
+
+        last = conn.execute("SELECT COALESCE(MAX(run_id), 0) FROM import_runs").fetchone()[0]
+        try:
+            threading.Thread(target=worker, name="mailbox-sync", daemon=True).start()
+        except BaseException:
+            sync_guard.release()
+            raise
+        run_id = None
+        waited = 0.0
+        while not isinstance(run_id, int) and waited < RUN_ID_WAIT_SECONDS:
+            finished = done.wait(0.02)
+            waited += 0.02
+            run_id = (box.get("summary") or {}).get("run_id") or (read_state() or {}).get("running_run_id")
+            if finished:
+                break
+        if not isinstance(run_id, int):
+            run_id = last + 1  # the worker has not opened its run yet: runs take the next rowid
+        return JSONResponse({"run_id": run_id}, status_code=202)
+
+    @app.post("/api/mailbox/disconnect")
+    def mailbox_disconnect():
+        delete_token()
+        oauth.clear_cache()
+        ensure_state_row()
+        alerts_sync.write_state(conn, auth_state="not_configured", auto_sync="on", account=None)
+        return {"ok": True}
+
     # ── zones & indicators ──────────────────────────────────────────────────
     @app.get("/api/zones")
     def zones():
@@ -398,5 +651,5 @@ def create_app(db_path: str | None = None, needs_path: str | None = None) -> Fas
     return app
 
 
-def default_app() -> FastAPI:  # for `uvicorn app.main:default_app --factory`
-    return create_app()
+def default_app() -> FastAPI:  # `uvicorn app.main:default_app --factory` (python -m app.cli serve)
+    return create_app(enable_mailbox_scheduler=True)  # only the real server runs the 15-minute schedule
