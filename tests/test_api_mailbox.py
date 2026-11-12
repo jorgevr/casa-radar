@@ -515,7 +515,7 @@ def test_scheduler_runs_at_interval_from_state(no_external_network):
 
     async def fake_sleep(seconds):
         sleeps.append(seconds)
-        if len(sleeps) >= 3:
+        if len(sleeps) >= 4:
             raise asyncio.CancelledError()
 
     def run_sync():
@@ -605,7 +605,7 @@ def test_scheduler_source_error_does_not_stop_schedule(no_external_network):
 
     async def fake_sleep(seconds):
         ticks["n"] += 1
-        if ticks["n"] >= 3:
+        if ticks["n"] >= 4:
             raise asyncio.CancelledError()
 
     def flaky_sync():
