@@ -18,7 +18,7 @@ tr.ex td{opacity:.5}tr.gone td{color:var(--mut)}tr.gone .bar,tr.gone .pill{opaci
 .bar{display:inline-block;width:60px;height:8px;background:var(--line);border-radius:4px;vertical-align:middle;margin-right:6px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc)}
 .pill{display:inline-block;padding:1px 8px;border-radius:10px;font-size:12px;border:1px solid var(--line);color:var(--mut)}.warn{color:var(--warn)}.bad{color:var(--bad)}.good{color:var(--good)}.mut{color:var(--mut)}
 input,select,textarea,button.b{font:inherit;padding:6px 8px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink)}
-button.b{cursor:pointer}button.b.p{background:var(--acc);color:#fff;border-color:var(--acc)}textarea{width:100%;min-height:110px;font-family:ui-monospace,monospace;font-size:12px}
+button.b{cursor:pointer}button.b:disabled,button.b[aria-disabled="true"]{opacity:.5;cursor:not-allowed}button.b.p{background:var(--acc);color:#fff;border-color:var(--acc)}textarea{width:100%;min-height:110px;font-family:ui-monospace,monospace;font-size:12px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px}label{display:block;font-size:12px;color:var(--mut)}label input,label select{width:100%;margin-top:2px}
 .row2{display:flex;gap:10px;align-items:center;flex-wrap:wrap}ul.fl{margin:6px 0;padding-left:18px}.hide{display:none}.det td{white-space:normal;background:var(--bg)}.det a{color:var(--acc)}
 .mbx{background:var(--card);border-bottom:1px solid var(--line);padding:8px 20px;font-size:13px}.mbx .row2{gap:6px 16px}.ban{margin:0 0 12px;padding:10px 14px;border-radius:8px;border:1px solid var(--line);border-left:4px solid var(--warn);background:var(--card)}.ban.bad{border-left-color:var(--bad)}.ban ol{margin:6px 0 0;padding-left:20px}
@@ -303,7 +303,7 @@ async function render(){nav();$('#stat').textContent='';try{await({ranking:rende
 const MBX_POLL_IDLE_MS=60000;     // periodic refresh while nothing is running
 const MBX_POLL_RUNNING_MS=2000;   // refresh while a sync runs or authorisation is awaited
 const MBX_AUTH_WAIT_MAX_MS=300000;// stop waiting for the consent after 5 minutes (contract)
-let mbx=null,mbxErr=null,mbxTimer=null,mbxSeq=0,syncBusy=false,authWait=null,authMsg='',folderBusy=false;
+let mbx=null,mbxErr=null,mbxTimer=null,mbxSeq=0,syncBusy=false,syncChecking=false,mbxNote='',mbxFocusAt=0,authWait=null,authMsg='',folderBusy=false;
 const fmtTs=v=>{const m=/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/.exec(v||'');return m?`${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}`:'desconocido'};
 async function mbxCall(path,method='GET',body){let r;
   try{r=await fetch('/api/mailbox'+path,{method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined})}
@@ -321,8 +321,10 @@ function drawMbx(){const el=$('#mbx'),ban=$('#ban');if(!el)return;
     `<span class="mut">Última sincronización correcta:</span> ${m.last_success_at?esc(fmtTs(m.last_success_at)):'ninguna todavía'}`);
     if(m.last_error)bits.push(`<span class="bad">Último error: ${esc(m.last_error)}${m.last_error_at?' ('+esc(fmtTs(m.last_error_at))+')':''}</span>`)}
   if(run){const p=m.progress;bits.push(`<span class="warn">Sincronizando…${p&&p.total>0?' '+esc(p.done)+' de '+esc(p.total)+' emails':''}</span>`)}
-  const dis=nc||m.auth_state==='revoked'||run||syncBusy;
-  el.innerHTML=`<div class="row2">${bits.map(b=>`<span>${b}</span>`).join('')}<button class="b" id="mbsync" ${dis?'disabled':''} ${nc?'title="Configura el buzón primero"':m.auth_state==='revoked'?'title="Vuelve a autorizar primero"':''}>Sincronizar ahora</button></div>`;
+  const soft=nc||m.auth_state==='revoked',dis=run||syncBusy||syncChecking;
+  if(m.auth_state==='valid')mbxNote='';
+  if(mbxNote)bits.push(`<span class="bad">${esc(mbxNote)}</span>`);
+  el.innerHTML=`<div class="row2">${bits.map(b=>`<span>${b}</span>`).join('')}<button class="b" id="mbsync" ${dis?'disabled':''} ${soft&&!dis?'aria-disabled="true"':''} ${nc?'title="Configura el buzón primero"':m.auth_state==='revoked'?'title="Vuelve a autorizar primero"':''}>Sincronizar ahora</button></div>`;
   $('#mbsync').onclick=syncNow;
   ban.innerHTML=m.auth_state==='revoked'?`<div class="ban bad"><b>Sincronización detenida: permiso revocado o caducado.</b> La sincronización automática está en pausa hasta que vuelvas a autorizar (botón «Autorizar de nuevo» en Datos → Buzón).${Array.isArray(m.reauthorise_steps)&&m.reauthorise_steps.length?`<ol>${m.reauthorise_steps.map(x=>`<li>${esc(x)}</li>`).join('')}</ol>`:''}</div>`:'';
   drawOod();drawMbc()}
@@ -342,7 +344,16 @@ async function mbxRefresh(){const my=++mbxSeq,was=mbx&&mbx.running;
   drawMbx();
   if(was&&mbx&&!mbx.running&&tab==='ranking')renderRanking().catch(()=>{});
   mbxSchedule()}
-async function syncNow(){if(syncBusy||(mbx&&mbx.running))return;syncBusy=true;drawMbx();
+async function syncNow(){if(syncBusy||syncChecking||(mbx&&mbx.running))return;
+  const st0=mbx&&mbx.auth_state;
+  if(st0==='revoked'||st0==='not_configured'){ // stale state may be the cause: re-check before refusing
+    syncChecking=true;mbxNote='';drawMbx();await mbxRefresh();syncChecking=false;
+    const st=mbx&&mbx.auth_state;
+    if(st==='revoked')mbxNote='El permiso sigue revocado: usa «Autorizar de nuevo» en Datos → Buzón.';
+    else if(st==='not_configured')mbxNote='Configura primero el buzón en Datos → Buzón.';
+    if(st!=='valid'){drawMbx();return}
+    if(mbx.running)return}
+  mbxNote='';syncBusy=true;drawMbx();
   const r=await mbxCall('/sync','POST');
   if(r.status===202)toast('Sincronización iniciada');
   else if(r.status===409){const e=r.body&&r.body.error;toast(e==='sync already running'?'Ya hay una sincronización en curso.':e==='mailbox not configured'?'El buzón no está configurado.':'La sincronización no está disponible: vuelve a autorizar el permiso.',1)}
@@ -370,6 +381,9 @@ function mbcInit(){const l=$('#mbl');l.oninput=()=>{l.dataset.touched='1'};
     const r=await mbxCall('/disconnect','POST');authWait=null;
     authMsg=r.status===200?'<span class="good">Buzón desconectado.</span>':`<span class="bad">${esc(r.status===0?'Sin conexión con el servidor local.':'No se pudo desconectar (código '+r.status+').')}</span>`;await mbxRefresh()};
   drawMbc()}
+// Returning to the tab/window: refresh at once (one request even if both events fire).
+function mbxOnReturn(){if(document.hidden)return;const t=Date.now();if(t-mbxFocusAt<1000)return;mbxFocusAt=t;mbxRefresh()}
+document.addEventListener('visibilitychange',mbxOnReturn);window.addEventListener('focus',mbxOnReturn);
 mbxRefresh();
 render();
 </script>
