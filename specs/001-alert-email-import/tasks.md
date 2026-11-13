@@ -268,7 +268,8 @@ and listing detail shows them as stated (FR-037, FR-038, SC-011). Scoring, filte
 **Gate**: T070 (the user's real samples) comes first. No reader change before the samples exist
 (Article VI). This phase does not block v1 (2026-11-28) and may run before or after Phase 10.
 
-- [ ] T070 [US7] (user) Make anonymised copies of real alert emails that contain each token (`sin ascensor`, `interior`, `Garaje opc. … €`) with `tests/fixtures/anonymise_eml.py`, put them in `tests/fixtures/emails/` and run `--check` on the folder; list only the new file names in `specs/001-alert-email-import/handoffs/T070-fixtures.md` (names only, no content)
+- [ ] T070 [US7] (user) Make anonymised copies of real alert emails that contain each token (`sin ascensor`, `interior`, `Garaje opc. … €`) with `tests/fixtures/anonymise_eml.py`, put them in `tests/fixtures/emails/` and run `--check` on the folder; list only the new file names in `specs/001-alert-email-import/handoffs/T070-fixtures.md` (names only, no content). Status 2026-11-13: two samples exist (`interior`: `2026-10-29_nuevo-piso_…_112945630.eml`, `sin ascensor`: `2026-11-03_nuevo-atico_…_112977972.eml`, both `--check` clean); the third, `Garaje opc. … €`, is still missing (the `2026-11-04_…_112719581.eml` copy does not contain it, find the right email). They are held outside the repository until the fixture-count tests below are updated together with them
+- [ ] T070a [US7] Adding fixtures changes the hand-counted totals of nine existing tests (they assert the size of the fixture set, for example 12 emails): `tests/test_alerts_import.py::test_import_fixture_folder`, `tests/test_cli_import.py::test_cp1252_stdout_fixture_folder_totals`, `tests/test_derive.py::test_run_counters`, `tests/test_derive_prices.py::test_order_independence_over_20_shuffles`, `tests/test_idealista_alert.py::test_every_fixture_is_covered` and four in `tests/test_sync.py` (the malformed-rules, second-sync, new-message and concurrent-sync tests). In the same change that adds the fixtures to `tests/fixtures/emails/`, update those expectations and add the per-fixture expected parse results for the new emails, with every expected value calculated by hand from the fixture text and the calculation written in a comment (Article VII); never copy values from the code's output. This is a user-approved test edit (AGENTS.md), reviewed for weakened assertions (depends on T070)
 
 ### Tests first (all offline)
 
@@ -278,7 +279,7 @@ and listing detail shows them as stated (FR-037, FR-038, SC-011). Scoring, filte
 
 ### Implementation (hot files serialised: `app/db.py`, `app/alerts.py`, `app/derive.py`, `app/main.py`, `app/static/index.html`)
 
-- [ ] T074 [US7] In `app/providers/idealista_alert.py`: add the three tokens to the closed list exactly as the samples spell them (patterns anchored like the existing ones), add `garage_option_price` to `ListingBlock`, reject contradicting tokens with a `Problem` carrying the evidence, keep every other token a notice (depends on T070, T071)
+- [ ] T074 [US7] In `app/providers/idealista_alert.py`: add the three tokens to the closed list exactly as the samples spell them (patterns anchored like the existing ones), add `garage_option_price` to `ListingBlock`, reject contradicting tokens with a `Problem` carrying the evidence, keep every other token a notice (depends on T070, T070a, T071)
 - [ ] T075 [US7] In `app/db.py`: add the nullable integer column `garage_option_price` to `sightings` and `listings` through the existing migration list (existing databases keep every row) (depends on T072)
 - [ ] T076 [US7] In `app/alerts.py` and `app/derive.py`: add `garage_option_price` to `SIGHTING_FIELDS` and `ATTRIBUTES`, store it per sighting and derive it like the other attributes (latest non-null, user values protected) (depends on T074, T075)
 - [ ] T077 [US7] In `app/main.py`: include `garage_option_price` in the `GET /api/listings` payload per [contracts/api.md](contracts/api.md) if the listing row is not already passed through; no scoring, filter or CSV change (depends on T076, T073)
@@ -303,8 +304,9 @@ and listing detail shows them as stated (FR-037, FR-038, SC-011). Scoring, filte
   planned after them per the delivery order.
 - **Phase 10**: after the phases it checks.
 - **Phase 11 (US7, attributes)**: after Phase 9. T070 (the user's samples) gates T074. Tests T071–T073
-  are [P]; T075 → T076 → T077 → T078 edit hot files and run one at a time. Independent of Phase 10;
-  not required for v1.
+  are [P]; T075 → T076 → T077 → T078 edit hot files and run one at a time. T070a (updating the
+  fixture-count tests) lands in the same commit as the new fixtures so the suite is never red.
+  Independent of Phase 10; not required for v1.
 
 ### Within each phase
 
