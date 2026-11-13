@@ -147,9 +147,13 @@ creation with a function that raises, and assert zero connections (SC-006).
     `ha bajado de <old>€ a <new>€`, and both must agree with the card price, else failed;
   - attributes: the `<mj-raw>` line under the price, tokenised against a closed list of the tokens
     seen in the samples: `N hab.`, `N m²`, `Nª planta`, `exterior`, `con ascensor`,
-    `Garaje incluido`. Any other token (including plausible ones not yet seen, such as `interior` or
-    `sin ascensor`) does not fail the email; it is listed in the summary as "unrecognised attribute:
-    <token>" and the reader is extended when a sample shows it (Article VI);
+    `Garaje incluido`. Any other token does not fail the email; it is listed in the summary as
+    "unrecognised attribute: <token>" and the reader is extended when a sample shows it (Article VI).
+    Amendment 2026-11-13 (US7, FR-037): the first real sync showed `interior` (`exterior = 0`),
+    `sin ascensor` (`elevator = 0`) and `Garaje opc. <amount> €` (`garage_option_price`, `garage`
+    unchanged). They join the closed list only after anonymised samples containing them are in
+    `tests/fixtures/emails/` and the exact spelling, spacing and price format are read from those
+    samples; a variant no sample shows stays a notice, and two contradicting tokens fail the block;
   - development: link path `/obra-nueva/` and type text `Promoción` → `development = 1`; the unit
     description (e.g. "6 viviendas unifamiliares") is the card's description text, kept as stated;
   - new-build status: the email states it when the subject kind is `Nueva obra nueva` or the link is

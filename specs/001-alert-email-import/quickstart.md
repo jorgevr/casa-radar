@@ -85,3 +85,13 @@ Open http://127.0.0.1:8765 → Oportunidades. Expected:
 
 Delete `data/casa.db` if you imported fixtures into your real database. To stop mailbox access
 completely: "Desconectar" in Datos, then revoke at myaccount.google.com/permissions.
+
+## 7. Stated attributes (after Phase 11)
+
+- Run `python -m app.cli reprocess-emails --all` on your real database; the summary no longer lists
+  "atributo no reconocido" for `sin ascensor`, `interior` or `Garaje opc. … €`.
+- In Oportunidades, open the listings that carried those notices: the detail shows "Ascensor: no",
+  "Exterior: no (interior)" and "Garaje: opcional, +<importe> €"; listings that state none of them
+  still read "desconocido".
+- The ranked order and scores are unchanged from before the reprocess (scoring is not part of this
+  step).

@@ -199,6 +199,42 @@ listings first seen in B.
 
 ---
 
+### User Story 7 - Stated attributes are recognised: lift, interior, optional garage (Priority: P2)
+
+Alerts state three more attributes the reader does not recognise yet (first real sync, 2026-11-13):
+`sin ascensor`, `interior` and `Garaje opc. 25.000 €`. When an alert states them, the listing shows
+them as stated, and the "unrecognised attribute" notice disappears for them. Scoring, filters and
+the ranking do not change in this story (FR-038).
+
+**Why this priority**: constitution I and VI; the household reads these attributes by hand today
+(an optional garage has an extra cost, no lift matters for flats, an interior home has no outside
+view), and the tool already stores the matching fields, so showing what the email says is cheap and
+safe. Weighing them in the score is a later decision.
+
+**Independent Test**: process the new anonymised samples (one per token) and inspect the listings.
+
+**Acceptance Scenarios**:
+
+1. **Given** an alert whose attribute line says `sin ascensor`, **When** the listing is shown,
+   **Then** its lift reads "no" (stated), and no "unrecognised attribute" notice is raised for it.
+2. **Given** an alert whose attribute line says `interior`, **When** the listing is shown, **Then**
+   its exterior reads "no (interior)", stated, with no notice and no inference about light.
+3. **Given** an alert whose attribute line says `Garaje opc. 25.000 €`, **When** the listing is
+   shown, **Then** it reads "Garaje: opcional, +25.000 €" and the plain garage yes/no stays
+   "desconocido"; the optional garage is never read as "included".
+4. **Given** an alert that states none of these, **When** the listing is shown, **Then** lift,
+   exterior and garage read "desconocido" exactly as before (US5).
+5. **Given** a listing previously shown "sin ascensor" and a later-dated alert stating `con ascensor`,
+   **When** the listing is derived again, **Then** the lift reads "sí" (latest stated value, FR-011)
+   and both sightings remain.
+6. **Given** a variant not seen in any sample (for example `Garaje opc.` without a price, a price
+   in another format, or `sin garaje`), **When** the email is processed, **Then** it is still
+   reported as "unrecognised attribute" and nothing is guessed.
+7. **Given** emails already stored from earlier syncs, **When** the user runs `reprocess-emails
+   --all`, **Then** the new tokens apply to them without the mailbox.
+
+---
+
 ### Edge Cases
 
 - **Same listing in several alerts**: one listing; each sighting recorded with its email and date.
@@ -276,6 +312,15 @@ listings first seen in B.
 - **Very large first-sync backlog**: processed oldest first in portions; progress is visible; the app
   stays usable; an interrupted sync resumes where it stopped without reprocessing; the summary
   covers the whole backlog once finished.
+- **Contradicting attribute tokens in one listing block** (for example `con ascensor` and
+  `sin ascensor` together): the listing block is reported as failed with the evidence; neither value
+  is picked (FR-037).
+- **Optional garage together with `Garaje incluido`**: both are stated, so garage reads "included"
+  and the option price is kept as stated; nothing is inferred between them (FR-037).
+- **A later alert drops the optional garage or states another price**: the latest-dated stated value
+  wins (FR-011); earlier sightings keep their own values.
+- **Optional-garage price in a format not seen in a sample**: the token is reported as
+  "unrecognised attribute", not parsed by guess (FR-037).
 
 ## Requirements *(mandatory)*
 
@@ -408,6 +453,21 @@ listings first seen in B.
   for that listing, and "unknown" when the listing has only been seen in other alert types or entered
   by the user. The updated date is the date of the most recent alert that changed its price, and
   "unknown" when the price has never changed. Unknown dates sort last.
+- **FR-037**: The alert reader MUST recognise these attribute tokens, and only once a real
+  anonymised sample shows each one (FR-022): `sin ascensor` → lift stated absent; `interior` →
+  exterior stated absent; `Garaje opc. <amount> €` → garage offered as an option at the stated price
+  in euros (a new value, "optional-garage price"). A recognised absence is a stated value, not an
+  inference from silence (FR-003, FR-011). An optional garage MUST NOT set the garage to included or
+  absent: garage stays unknown unless the email also states `Garaje incluido`. Each token may appear
+  at most once in a listing block, and two tokens that contradict each other make the block fail with
+  the evidence (FR-009). Variants not seen in a sample stay "unrecognised attribute" notices.
+- **FR-038**: Listing detail and the API MUST show these values as stated, in Spanish: lift "no",
+  exterior "no (interior)", garage "opcional, +<amount> €"; values the email did not state keep
+  reading "desconocido". The tool MUST NOT infer anything beyond the token (for example no "sin luz
+  natural" from `interior`). Scoring, hard filters, affordability, the ranking order and the scoring
+  version MUST NOT change because of these values in this feature; a later specification defines
+  how they weigh. Stored emails MUST be re-readable with `reprocess-emails --all`, so earlier
+  alerts pick the tokens up without the mailbox (FR-010).
 
 ### Key Entities
 
@@ -415,8 +475,9 @@ listings first seen in B.
   subject, alert date, alert type, category, original content, processing outcome and reason, and
   whether it is a forward (reported as failed until forwards are supported, FR-017).
 - **Listing sighting**: one appearance of a listing in one alert email; the values stated there
-  (price, area, bedrooms, type, location text, link), the email date and the alert's category. Many
-  sightings per listing.
+  (price, area, bedrooms, type, location text, link, and stated attributes such as floor, exterior,
+  lift, garage and optional-garage price), the email date and the alert's category. Many sightings
+  per listing.
 - **Category rule**: user-configured "subject contains <text> → <category>"; categories name the
   household's saved searches (new-build, flat, house).
 - **Candidate listing** (existing): the deduplicated home being ranked; current values, first/last
@@ -455,6 +516,10 @@ listings first seen in B.
   folder, existence) as a result of any sync.
 - **SC-010**: A first-sync backlog of 1,000 emails completes in under 10 minutes without making the app
   unusable, and an interruption at any point loses no work already done.
+- **SC-011**: On the fixture set including the three new samples, 100% of `sin ascensor`,
+  `interior` and `Garaje opc. … €` tokens are shown as stated and raise no "unrecognised attribute"
+  notice, zero attribute values appear that the source email did not state, and the scores and order
+  of the ranked list are identical to those produced before the reader change.
 
 ## Assumptions
 
@@ -487,6 +552,14 @@ listings first seen in B.
   kept locally.
 - Automatic syncing happens only while the app is running; nothing runs in the background after it
   is closed.
+- The three tokens of US7 come from the household's own alerts (first real sync, 2026-11-13: 55
+  emails, notices for `Garaje opc. 25.000 €`, `sin ascensor` and `interior`). Their exact spelling
+  is pinned only by anonymised samples added to `tests/fixtures/emails/` before the reader changes
+  (constitution VI, FR-022); until then the closed token list is unchanged.
+- Scoring and filter rules for lift, exterior and optional-garage cost are out of scope of US7. The
+  household treats `interior` as a strong negative and an optional garage price as a possible extra
+  cost; a later specification defines those rules with weights in configuration, a bumped scoring
+  version and hand-calculated golden tests (constitution II, VII, VIII).
 
 ## Clarifications
 
@@ -544,3 +617,17 @@ listings first seen in B.
 - Analysis remediation (2026-10-28): text-only, two-version and forwarded alerts are reported as
   failed until a real sample exists (FR-017, constitution VI); a relisted listing the user marked
   "no longer available" stays so and is flagged "seen again in an alert on <date>" (FR-019).
+
+### Session 2026-11-13
+
+- Amendment (user, 2026-11-13): after the first real sync (55 emails imported) three attribute
+  notices were judged worth recognising: `Garaje opc. 25.000 €` (an optional garage has an extra
+  cost), `sin ascensor` (no lift matters for flats) and `interior` (no outside view; a strong
+  negative for the household). Scope: reader and display only (US7, FR-037, FR-038, SC-011);
+  scoring and filters are deferred to a later specification.
+- Q: Does `interior` mean "no natural light"? → A: the email states only `interior`; it is stored
+  as exterior = no and shown as such, with no inference about light (FR-038).
+- Q: Does an optional garage count as "garage: yes"? → A: no; garage stays unknown and only the
+  stated option price is kept (FR-037).
+- Q: Which spellings count? → A: only those shown by real anonymised samples added before the
+  reader changes; every other variant stays an "unrecognised attribute" notice (FR-022, FR-037).

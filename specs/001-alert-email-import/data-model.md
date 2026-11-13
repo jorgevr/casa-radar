@@ -66,7 +66,8 @@ One appearance of one listing in one alert email.
 | `price` | number, nullable | card price as stated |
 | `previous_price` | number, nullable | price drops only: the stated "ha bajado de" price |
 | `area_m2`, `bedrooms`, `floor` | number, nullable | only if stated |
-| `exterior`, `elevator`, `garage` | 0/1, nullable | only if stated; absence = null, never 0 (FR-003) |
+| `exterior`, `elevator`, `garage` | 0/1, nullable | `1` when the email states it (`exterior`, `con ascensor`, `Garaje incluido`); `0` only when the email states the opposite (`interior`, `sin ascensor`, FR-037); null when not mentioned, never 0 from absence (FR-003) |
+| `garage_option_price` | integer (euros), nullable | `Garaje opc. <amount> €`: garage offered as an option at that price; does not set `garage` (FR-037) |
 | `type_text` | text, nullable | as in the title, e.g. `Chalet pareado` |
 | `property_type` | text, nullable | mapped type (R9); null for developments |
 | `new_build_stated` | 0/1, nullable | 1 when the email states new-build (R9); never 0 from absence |
@@ -87,7 +88,7 @@ New nullable columns:
 
 | Field | Type | Rules |
 |---|---|---|
-| `floor`, `exterior`, `elevator`, `garage`, `terrace`, `pool` | nullable | null = "unknown" in the UI (FR-011) |
+| `floor`, `exterior`, `elevator`, `garage`, `garage_option_price`, `terrace`, `pool` | nullable | null = "unknown" in the UI (FR-011); `garage_option_price` is added by US7 as a nullable integer (euros) |
 | `location_text` | text | from the latest sighting; shown when zone not recognised |
 | `development` | 0/1 | FR-034 |
 | `unit_description` | text | developments |
@@ -106,8 +107,8 @@ Derivation (R11), recomputed for a listing whenever one of its sightings changes
 
 - `price` = price of the latest-dated sighting (ties: higher); not written if
   `field_sources.price ∈ {manual, csv}` (FR-023).
-- `area_m2`, `bedrooms`, `floor`, `exterior`, `elevator`, `garage`, `property_type`,
-  `location_text` = latest non-null sighting value; same `manual`/`csv` protection; never null over a
+- `area_m2`, `bedrooms`, `floor`, `exterior`, `elevator`, `garage`, `garage_option_price`,
+  `property_type`, `location_text` = latest non-null sighting value (a stated `0` is non-null); same `manual`/`csv` protection; never null over a
   known value (FR-011).
 - `new_build` = 1 if any sighting states it (`new_build_origin = email`); else 1 with
   `new_build_origin = category` if a sighting's category is `new-build`; a user value

@@ -254,6 +254,39 @@ message added to the fake appears after the next scheduled tick; revoking (fake 
 
 ---
 
+## Phase 11: User Story 7 — Stated attributes: lift, interior, optional garage (P2)
+
+**Goal**: the reader recognises `sin ascensor` (`elevator = 0`), `interior` (`exterior = 0`) and
+`Garaje opc. <amount> €` (new `garage_option_price`, `garage` unchanged) once real samples show them,
+and listing detail shows them as stated (FR-037, FR-038, SC-011). Scoring, filters, affordability and
+`SCORING_VERSION` do not change.
+
+**Independent Test**: process the new anonymised samples; none of the three tokens raises an
+"unrecognised attribute" notice, the listings show "Ascensor: no", "Exterior: no (interior)" and
+"Garaje: opcional, +<amount> €", and scores and order equal those from before the reader change.
+
+**Gate**: T070 (the user's real samples) comes first. No reader change before the samples exist
+(Article VI). This phase does not block v1 (2026-11-28) and may run before or after Phase 10.
+
+- [ ] T070 [US7] (user) Make anonymised copies of real alert emails that contain each token (`sin ascensor`, `interior`, `Garaje opc. … €`) with `tests/fixtures/anonymise_eml.py`, put them in `tests/fixtures/emails/` and run `--check` on the folder; list only the new file names in `specs/001-alert-email-import/handoffs/T070-fixtures.md` (names only, no content)
+
+### Tests first (all offline)
+
+- [ ] T071 [P] [US7] Add `tests/test_idealista_alert_attributes.py` from the new fixtures: each token yields its stated value (`elevator == 0`, `exterior == 0`, `garage_option_price` equal to the amount read by hand from the fixture text, with `garage` still `None`), and no "atributo no reconocido" notice for it; `Garaje incluido` together with the option keeps `garage == 1`; a copy of a real block with an altered attribute line (`con ascensor` + `sin ascensor`, or a token twice) fails with evidence; variants no sample shows (`Garaje opc.` without price, another price format, `sin garaje`) stay notices; every previously existing fixture parses to exactly the same values as before
+- [ ] T072 [P] [US7] Add `tests/test_derive_attributes.py`: derivation keeps a stated `0` (it is a value, not unknown) and a later-dated `con ascensor` replaces an earlier `sin ascensor`; `garage_option_price` = latest non-null sighting value; `manual`/`csv` values of `elevator`, `exterior`, `garage` stay protected; a database created with the old schema gains the `garage_option_price` columns on connect without losing rows; `reprocess-emails --all` applies the new tokens to emails stored while the old token list was in force (restore the old list temporarily inside the test), without a mailbox or network
+- [ ] T073 [P] [US7] Add `tests/test_api_attributes.py`: `GET /api/listings` returns `elevator`, `exterior`, `garage_option_price` as stated and `null` when not stated; the ranked order and every score for the fixture set equal those computed before the reader change (golden values taken from a run on the pre-change token list inside the test, Article VII), and `scoring_version` is unchanged
+
+### Implementation (hot files serialised: `app/db.py`, `app/alerts.py`, `app/derive.py`, `app/main.py`, `app/static/index.html`)
+
+- [ ] T074 [US7] In `app/providers/idealista_alert.py`: add the three tokens to the closed list exactly as the samples spell them (patterns anchored like the existing ones), add `garage_option_price` to `ListingBlock`, reject contradicting tokens with a `Problem` carrying the evidence, keep every other token a notice (depends on T070, T071)
+- [ ] T075 [US7] In `app/db.py`: add the nullable integer column `garage_option_price` to `sightings` and `listings` through the existing migration list (existing databases keep every row) (depends on T072)
+- [ ] T076 [US7] In `app/alerts.py` and `app/derive.py`: add `garage_option_price` to `SIGHTING_FIELDS` and `ATTRIBUTES`, store it per sighting and derive it like the other attributes (latest non-null, user values protected) (depends on T074, T075)
+- [ ] T077 [US7] In `app/main.py`: include `garage_option_price` in the `GET /api/listings` payload per [contracts/api.md](contracts/api.md) if the listing row is not already passed through; no scoring, filter or CSV change (depends on T076, T073)
+- [ ] T078 [US7] In `app/static/index.html` listing detail: show "Ascensor: no", "Exterior: no (interior)" and "Garaje: opcional, +<amount> €" when stated, keep "desconocido" otherwise, escape every value with `esc()`; no scoring or filter change (depends on T077)
+- [ ] T079 [US7] Run [quickstart.md](quickstart.md) §7 on the real database (user) and record the result
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase dependencies
@@ -269,6 +302,9 @@ message added to the fake appears after the next scheduled tick; revoking (fake 
 - **Phase 9 (US1-B, mailbox)**: after Phase 3 (needs `process_message`); independent of 4–8, but
   planned after them per the delivery order.
 - **Phase 10**: after the phases it checks.
+- **Phase 11 (US7, attributes)**: after Phase 9. T070 (the user's samples) gates T074. Tests T071–T073
+  are [P]; T075 → T076 → T077 → T078 edit hot files and run one at a time. Independent of Phase 10;
+  not required for v1.
 
 ### Within each phase
 
@@ -295,6 +331,8 @@ T050–T053 tests   |   T054 app/mailbox/__init__.py   |   T055 app/mailbox/cred
 3. **Phase 9** → mailbox sync, target **2026-11-28** (v1). If it slips, v1 ships with the file path
    and sync follows (plan, Article X).
 4. **Phase 10** → docs, secret scan, quickstart run.
+5. **Phase 11** (amendment 2026-11-13) → stated lift, interior and optional garage, reader and
+   display only; needs the user's anonymised samples first (T070); scoring is a later spec.
 
 ## Notes
 

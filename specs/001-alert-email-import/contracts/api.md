@@ -74,7 +74,8 @@ Response = run summary.
 
 - `GET /api/listings`: response gains `scoring_version` and, per listing: `published_at`,
   `price_updated_at`, `categories`, `development`, `unit_description`, `new_build_origin`,
-  `floor`, `exterior`, `elevator`, `garage`, `terrace`, `pool`, `location_text`, `availability`,
+  `floor`, `exterior`, `elevator`, `garage`, `garage_option_price` (integer euros or null, US7),
+  `terrace`, `pool`, `location_text`, `availability`,
   `field_sources`, `first_run_id`, `sightings` (list of `{alert_date, subject}`, newest first, so the UI can show the emails a listing came from, US1-4), `links` (direct and tracking,
   merged listings included). Query `new_since_last_run=true` (US6).
 - `PATCH /api/listings/{id}`: also accepts `availability: "active" | "gone"` (FR-019),
