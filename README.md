@@ -11,6 +11,52 @@ Then: **Necesidades** (income, savings, rate, min m²/bedrooms) → **Datos** (i
 Demo data: `python -m app.cli import-listings samples/listings.csv && python -m app.cli import-indicators samples/indicators.csv` (rows are labelled EJEMPLO; delete `data/casa.db` afterwards).
 Tests: `python -m pytest -q`.
 
+## Alert-email import (Idealista)
+
+Listings can come from Idealista **alert emails**, either from files or straight from your Gmail. Nothing is scraped: only the email text is read, links are never followed and images never downloaded. Unknown fields stay "desconocido".
+
+### First run: needs file
+`config/needs.yaml` is yours and is not tracked by git. Copy the template once (the app also does it when the file is missing):
+```bash
+cp config/needs.example.yaml config/needs.yaml     # PowerShell: Copy-Item config
+eeds.example.yaml config
+eeds.yaml
+```
+`data/` (the SQLite database) is untracked too.
+
+### Import from files (no network)
+```bash
+python -m app.cli import-emails PATH [PATH ...]    # .eml / .mbox files, or a folder (not recursive)
+python -m app.cli reprocess-emails [--failed | --all]   # re-run the current reader over stored emails (default --failed)
+```
+Both print a summary (imported / already processed / rejected / failed emails; new / updated listings). Exit codes of `import-emails`: 0 ok, 1 an email failed. Re-importing the same files adds nothing.
+
+### Connect your mailbox (manual, once)
+Read-only access (`gmail.readonly`) to one Gmail label.
+1. In the Google Cloud console create a project, enable the **Gmail API**, configure the OAuth consent screen as *External* and set the publishing status to **In production** (in *Testing* the authorisation expires every 7 days). Create an OAuth client of type **Desktop app** and download its JSON.
+2. Save it as `%LOCALAPPDATA%\casa-radar\client_secret.json`.
+3. In Gmail create a filter `from:noresponder@idealista.com` → apply label `Idealista`.
+4. Authorise:
+   ```bash
+   python -m app.cli mailbox-setup --label Idealista
+   ```
+   Approve in the browser; continue past "Google hasn't verified this app" (it is your own project). Run the same command again to re-authorise.
+5. Sync:
+   ```bash
+   python -m app.cli sync [--wait]
+   ```
+   The first sync reads the last 30 days. Exit codes: 0 ok, 1 an email failed, 2 sync stopped (auth, label, network), 3 a sync is already running.
+
+While `serve` runs and the mailbox is configured, a sync also runs every 15 minutes; "Sincronizar ahora" in the UI runs one on demand. Synced emails keep their unread state in Gmail.
+
+### Where secrets live
+Outside the repository, in `%LOCALAPPDATA%\casa-radar\`: `client_secret.json` (copied by you) and `token.bin` (refresh token, encrypted with Windows DPAPI for your user). On non-Windows systems the token is `token.json` with owner-only permissions and **not encrypted**. Secrets are never printed or logged; `client_secret*.json` and `token*.json` are git-ignored.
+
+### Revoke access
+Press "Desconectar" in the **Datos** tab, then remove the app at <https://myaccount.google.com/permissions>. If you revoke from Google first, the next sync shows "sincronización detenida: permiso revocado" and pauses until you run `mailbox-setup` again.
+
+Outbound calls of this feature go only to `oauth2.googleapis.com` and `gmail.googleapis.com`. Tests never touch the network.
+
 ## How it scores (0–100)
 `price` (asking €/m² vs reference) · `affordability` (mortgage effort vs your ceiling, with +1/+2 pp rate stress) · `neighbourhood` (percentile of zone indicators) · `amenities` (distance to park/school/health/transit/supermarket) · `fit` · `momentum` (price drops). Weights live in `config/needs.yaml`.
 Rules the code enforces: missing data is **dropped and the weights renormalised**, never scored as average; every listing shows a `coverage` figure and a list of flags saying what the score is *not* based on; hard filters mark listings *excluded* with reasons instead of hiding them.
@@ -40,5 +86,5 @@ app/mortgage.py   payment, taxes, savings shortfall, stress   app/scoring.py   z
 app/listings.py   normalisation, zone assignment, price history
 app/providers/    idealista_mcp.py (stdio JSON-RPC), csv_import.py
 app/etl/          serpavi.py, overpass.py, madrid_ckan.py, indicators.py (CSV + Madrid districts)
-config/needs.yaml your needs and weights        tests/   23 tests
+config/needs.yaml your needs and weights        tests/   test suite
 ```
