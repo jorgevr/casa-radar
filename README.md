@@ -19,9 +19,7 @@ Listings can come from Idealista **alert emails**, either from files or straight
 `config/needs.yaml` is yours and is not tracked by git. Copy the template once (the app also does it when the file is missing):
 ```bash
 cp config/needs.example.yaml config/needs.yaml
-# PowerShell: Copy-Item config
-eeds.example.yaml config
-eeds.yaml
+# PowerShell: Copy-Item config\needs.example.yaml config\needs.yaml
 ```
 `data/` (the SQLite database) is untracked too.
 
