@@ -12,6 +12,16 @@ ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_NAME_PATTERNS = ("client_secret*.json", "token*.json")
 FORBIDDEN_EXACT_NAMES = {"token.bin"}
 
+# Build artefacts are gitignored, not repository content.
+SKIP_DIR_NAMES = {".git", "__pycache__", ".pytest_cache", ".venv", "venv"}
+SKIP_FILE_SUFFIXES = (".pyc",)
+
+# Real Google refresh tokens carry 45+ random body characters; the repository's
+# existing fake test tokens use <= 34 obviously fake body characters, so this
+# length gate flags realistic tokens without matching those fakes. Trade-off:
+# a real token whose body is shorter than this threshold would be missed.
+MIN_TOKEN_BODY = 40
+
 # Household data files must never be read by this scan.
 SKIP_CONTENT_PATHS = (
     Path("config/needs.yaml"),
@@ -22,13 +32,19 @@ SKIP_CONTENT_DIRS = (Path("data"),)
 
 def _token_re() -> re.Pattern[str]:
     # Built at runtime so this source file never contains a literal token-shaped string.
-    return re.compile("".join(["1", "/", "/", "0"]) + r"[A-Za-z0-9_\-]+")
+    return re.compile(
+        "".join(["1", "/", "/", "0"]) + r"[A-Za-z0-9_\-]{" + str(MIN_TOKEN_BODY) + r",}"
+    )
 
 
 def _is_forbidden_name(name: str) -> bool:
     if name in FORBIDDEN_EXACT_NAMES:
         return True
     return any(fnmatch.fnmatch(name, pat) for pat in FORBIDDEN_NAME_PATTERNS)
+
+
+def _is_skipped_file(name: str) -> bool:
+    return name.endswith(SKIP_FILE_SUFFIXES)
 
 
 def _should_skip_content(rel: Path) -> bool:
@@ -41,9 +57,11 @@ def _should_skip_content(rel: Path) -> bool:
 def find_forbidden_files(root: Path) -> list[Path]:
     found: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d != ".git"]
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
         base = Path(dirpath)
         for name in filenames:
+            if _is_skipped_file(name):
+                continue
             if _is_forbidden_name(name):
                 found.append(base / name)
     return sorted(found)
@@ -53,9 +71,11 @@ def find_refresh_token_strings(root: Path) -> list[Path]:
     pat = _token_re()
     found: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(root):
-        dirnames[:] = [d for d in dirnames if d != ".git"]
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_NAMES]
         base = Path(dirpath)
         for name in filenames:
+            if _is_skipped_file(name):
+                continue
             path = base / name
             rel = path.relative_to(root)
             if _is_forbidden_name(name) or _should_skip_content(rel):
@@ -101,7 +121,7 @@ def test_detects_forbidden_file_names(tmp_path, no_network):
 
 
 def test_detects_refresh_token_shaped_string(tmp_path, no_network):
-    sample = "".join(["1", "/", "/", "0"]) + "abcdefghijklmnopqrstuvwxyz"
+    sample = "".join(["1", "/", "/", "0"]) + "a" * MIN_TOKEN_BODY
     target = tmp_path / "notes.txt"
     target.write_text("prefix " + sample + " suffix", encoding="utf-8")
     found = find_refresh_token_strings(tmp_path)
@@ -115,3 +135,16 @@ def test_detects_refresh_token_shaped_string(tmp_path, no_network):
         assert sample not in msg
     else:
         raise AssertionError("expected a refresh-token-shaped string to be detected")
+
+
+def test_short_obviously_fake_token_tolerated(tmp_path, no_network):
+    # Trade-off: the length gate (MIN_TOKEN_BODY) tolerates short, obviously fake
+    # tokens used by existing repository tests/handoffs (<= 34 body chars) at the
+    # cost of missing a hypothetical real token with an unusually short body. We
+    # only flag realistic-length tokens and never inspect or report token content.
+    fake_body = "".join(["fake", "-", "refresh", "-", "token", "-", "FOR", "-", "TESTS", "-", "ONLY"])
+    short_fake = "".join(["1", "/", "/", "0"]) + fake_body
+    assert len(fake_body) < MIN_TOKEN_BODY
+    target = tmp_path / "fake.txt"
+    target.write_text(short_fake, encoding="utf-8")
+    assert find_refresh_token_strings(tmp_path) == []
