@@ -247,10 +247,10 @@ message added to the fake appears after the next scheduled tick; revoking (fake 
 
 ## Phase 10: Polish & Cross-Cutting
 
-- [ ] T062 [P] Update `README.md`: alert-email import, mailbox setup (Google Cloud project *In production*, Desktop client, label filter `from:noresponder@idealista.com`), where secrets live, how to revoke, `import-emails`/`sync`/`reprocess-emails`, `needs.example.yaml` → `needs.yaml`
-- [ ] T063 [P] Add `tests/test_no_secrets.py`: scan the repository tree (excluding `.git`) for files named `client_secret*.json`, `token*.json`, `token.bin` and for strings shaped like Google refresh tokens (`1//0…`) — fail if any
-- [ ] T064 Verify Article VIII end to end: run the ranking twice on the same db and needs → identical output; `scoring_version` present in API and CSV
-- [ ] T065 Run [quickstart.md](quickstart.md) §1–§6 and record results (including SC-008: a new alert visible within 16 minutes while the app runs)
+- [x] T062 [P] Update `README.md`: alert-email import, mailbox setup (Google Cloud project *In production*, Desktop client, label filter `from:noresponder@idealista.com`), where secrets live, how to revoke, `import-emails`/`sync`/`reprocess-emails`, `needs.example.yaml` → `needs.yaml`
+- [x] T063 [P] Add `tests/test_no_secrets.py`: scan the repository tree (excluding `.git`) for files named `client_secret*.json`, `token*.json`, `token.bin` and for strings shaped like Google refresh tokens (`1//0…`) — fail if any
+- [x] T064 Verify Article VIII end to end: run the ranking twice on the same db and needs → identical output; `scoring_version` present in API and CSV
+- [x] T065 Run [quickstart.md](quickstart.md) §1–§6 and record results (including SC-008: a new alert visible within 16 minutes while the app runs)
 
 ---
 
