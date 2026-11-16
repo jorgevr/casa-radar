@@ -136,7 +136,14 @@ fi
 
 REVIEWER_MODEL_FLAG=""
 if [ -n "$TIER_C_MODEL" ] && [ "$REVIEWER_AGENT" = "opencode" ]; then REVIEWER_MODEL_FLAG=" --model ${TIER_C_MODEL}"; fi
-cat <<EOF
+
+# Write the prompt to a file in the prompts folder (override with PROMPTS_DIR), not to stdout.
+PROMPTS_DIR="${PROMPTS_DIR:-C:/code/Prompts}"
+mkdir -p "$PROMPTS_DIR"
+SAFE_BRANCH="${TARGET_BRANCH//[^A-Za-z0-9._-]/_}"
+OUT_FILE="${PROMPTS_DIR}/coordinator-prompt-${SAFE_BRANCH}.md"
+
+cat > "$OUT_FILE" <<EOF
 ============================= COPY TO ORCA COORDINATOR =============================
 You are the Orca Coordinator for ${PROJECT_NAME}. Your mission is to implement and verify:
 Feature: ${FEATURE_TITLE}
@@ -225,3 +232,5 @@ ${DEV_BLOCK}
   (gates passed, loop iterations used, files touched). Wait for my go-ahead before the next group.
 ====================================================================================
 EOF
+
+echo "Prompt written to: $OUT_FILE"
